@@ -406,51 +406,42 @@ void loop() {
         }
         else if (cmd.startsWith("COMP=")) {
             String data = cmd.substring(5);
-            int idx1 = data.indexOf(','); int idx2 = data.indexOf(',', idx1+1);
-            int idx3 = data.indexOf(',', idx2+1); int idx4 = data.indexOf(',', idx3+1);
+            // Format: BAND,th,rt,at,rel,gate
+            int c[5];
+            c[0] = data.indexOf(',');
+            for (int i=1; i<5; i++) c[i] = data.indexOf(',', c[i-1]+1);
             
-            String band = data.substring(0, idx1);
-            float th = data.substring(idx1+1, idx2).toFloat();
-            float rt = data.substring(idx2+1, idx3).toFloat();
-            float at = data.substring(idx3+1, idx4).toFloat();
-            float rel = data.substring(idx4+1, data.lastIndexOf(',')).toFloat();
-            float gate = data.substring(data.lastIndexOf(',')+1).toFloat();
+            String band = data.substring(0, c[0]);
+            float th   = data.substring(c[0]+1, c[1]).toFloat();
+            float rt   = data.substring(c[1]+1, c[2]).toFloat();
+            float at   = data.substring(c[2]+1, c[3]).toFloat();
+            float rel  = data.substring(c[3]+1, c[4]).toFloat();
+            float gate = data.substring(c[4]+1).toFloat();
             
-            // 1. Calculate time coefficients on Core 0 right during parsing
             float calculated_attack_coef  = 1.0f - exp(-1.0f / (SAMPLE_RATE * (at / 1000.0f)));
             float calculated_release_coef = 1.0f - exp(-1.0f / (SAMPLE_RATE * (rel / 1000.0f)));
             
-            // 2. Safely capture the correct target struct address
             volatile DynamicsSettings* targetBand = NULL;
             if (band == "LOW")       targetBand = &settings.low_comp;
             else if (band == "MID")  targetBand = &settings.mid_comp;
             else if (band == "HIGH") targetBand = &settings.high_comp;
+            else if (band == "SLOW") targetBand = &settings.slow_comp;
             
-            // 3. Write data to the actual active variables inside the memory structure
             if (targetBand != NULL) {
-                *(float*)&(targetBand->threshold)   = th;
-                *(float*)&(targetBand->ratio)       = rt;
-                *(float*)&(targetBand->attack_coef)  = calculated_attack_coef;
-                *(float*)&(targetBand->release_coef) = calculated_release_coef;
-                *(float*)&(targetBand->gate_threshold) = gate;
+                *(float*)&(targetBand->threshold)     = th;
+                *(float*)&(targetBand->ratio)         = rt;
+                *(float*)&(targetBand->attack_coef)   = calculated_attack_coef;
+                *(float*)&(targetBand->release_coef)  = calculated_release_coef;
+                *(float*)&(targetBand->gate_threshold)= gate;
             }
-            // Persist band settings
-            if (band == "LOW") {
-                save_setting("low_th", th); save_setting("low_rt", rt);
-                save_setting("low_at", at); save_setting("low_re", rel);
-                save_setting("low_gate", gate);
-            } else if (band == "MID") {
-                save_setting("mid_th", th); save_setting("mid_rt", rt);
-                save_setting("mid_at", at); save_setting("mid_re", rel);
-                save_setting("mid_gate", gate);
-            } else if (band == "HIGH") {
-                save_setting("high_th", th); save_setting("high_rt", rt);
-                save_setting("high_at", at); save_setting("high_re", rel);
-                save_setting("high_gate", gate);
-            } else if (band == "SLOW") {
-                save_setting("slow_th", th); save_setting("slow_rt", rt);
-                save_setting("slow_at", at); save_setting("slow_re", rel);
-                save_setting("slow_gate", gate);
+            // Persist
+            const char* prefix = (band == "LOW") ? "low" : (band == "MID") ? "mid" : (band == "HIGH") ? "high" : "slow";
+            if (band == "LOW" || band == "MID" || band == "HIGH" || band == "SLOW") {
+                save_setting((String(prefix)+"_th").c_str(), th);
+                save_setting((String(prefix)+"_rt").c_str(), rt);
+                save_setting((String(prefix)+"_at").c_str(), at);
+                save_setting((String(prefix)+"_re").c_str(), rel);
+                save_setting((String(prefix)+"_gate").c_str(), gate);
             }
         }
     }
