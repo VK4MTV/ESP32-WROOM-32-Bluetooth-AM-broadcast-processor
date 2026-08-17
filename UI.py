@@ -1,146 +1,123 @@
 import serial
+import serial.tools.list_ports
 import tkinter as tk
 from tkinter import ttk
 
-# --- Serial Port Configuration ---
-# Update to match the serial port of your Jaycar ESP32 on your Pi 5
-SERIAL_PORT = '/dev/ttyUSB1' 
-try:
-    ser = serial.Serial(SERIAL_PORT, 115200, timeout=1)
-except Exception:
-    print(f"Could not open serial port {SERIAL_PORT}. Running GUI in offline demo mode.")
-    ser = None
+def find_port():
+    for p in serial.tools.list_ports.comports():
+        d = (str(p.description)+str(p.device)).lower()
+        if any(k in d for k in ["usb","uart","cp210","ch340","acm"]):
+            return p.device
+    return None
 
-def send_cmd(cmd_string):
-    if ser:
-        ser.write(f"{cmd_string}\n".encode())
-    else:
-        print(f"Offline Command Stream: {cmd_string}")
+PORT = find_port()
+ser = serial.Serial(PORT, 115200, timeout=1) if PORT else None
 
-def update_master():
-    # Only try to read sliders if they have actually been created yet
-    if 'gain_slider' in globals() and 'pclip_slider' in globals() and 'nclip_slider' in globals():
-        send_cmd(f"GAIN={float(gain_slider.get()):.2f}")
-        send_cmd(f"PCLIP={float(pclip_slider.get()):.2f}")
-        send_cmd(f"NCLIP={float(nclip_slider.get()):.2f}")
+def cmd(s):
+    if ser and ser.is_open: ser.write((s+"\n").encode())
+    else: print("OFF:", s)
 
-def toggle_rotator():
-    val = 1 if rot_var.get() else 0
-    send_cmd(f"ROT_EN={val}")
+def save(): cmd("SAVE")
+def master(v=None):
+    cmd(f"GAIN={gain.get():.2f}"); cmd(f"PCLIP={pclip.get():.2f}"); cmd(f"NCLIP={nclip.get():.2f}")
+def rot(): cmd(f"ROT_EN={1 if rotv.get() else 0}")
+def band(n, th, rt, at, re):
+    try: cmd(f"COMP={n},{float(th.get()):.2f},{float(rt.get()):.1f},{float(at.get()):.1f},{float(re.get()):.1f}")
+    except: pass
+def gen():
+    if genv.get(): cmd(f"TONE_FREQ={fe.get()}"); cmd("TONE_EN=1")
+    else: cmd("TONE_EN=0")
 
-def send_band_settings(band_name, th_s, rt_s, at_s, re_s):
-    th = float(th_s.get())
-    rt = float(rt_s.get())
-    try:
-        at = float(at_s.get())
-        re = float(re_s.get())
-    except ValueError:
-        return 
-    send_cmd(f"COMP={band_name},{th:.2f},{rt:.1f},{at:.1f},{re:.1f}")
-
-def toggle_generator():
-    if gen_var.get():
-        send_cmd(f"TONE_FREQ={freq_entry.get()}")
-        send_cmd("TONE_EN=1")
-        gen_btn.config(text="Stop Calibration Tone")
-    else:
-        send_cmd("TONE_EN=0")
-        gen_btn.config(text="Start Calibration Tone")
-
-# --- UI Layout Design ---
 root = tk.Tk()
-root.title("AM Broadcast Studio Master Controller")
-root.geometry("680x640")
+root.title("AM Processor")
+root.geometry("420x360")
 
-# 1. Master & Asymmetry Panel
-f_master = ttk.LabelFrame(root, text=" Master Drive & Asymmetry Ceilings ", padding=10)
-f_master.pack(fill="x", padx=15, pady=5)
+tk.Label(root, text=f"Online: {PORT}" if ser else "OFFLINE", 
+         bg="#2ecc71" if ser else "#e74c3c", fg="white").pack(fill="x")
 
-# Sliders are declared first without live updates until they are fully bound
-gain_slider = ttk.Scale(f_master, from_=0.5, to=3.0, orient='horizontal')
-gain_slider.set(1.0)
-gain_slider.pack(fill='x')
-ttk.Label(f_master, text="Master Drive (Input Gain)").pack(pady=(0, 10))
+# SCROLLABLE AREA
+canvas = tk.Canvas(root, highlightthickness=0, height=300)
+sb = ttk.Scrollbar(root, orient="vertical", command=canvas.yview)
+canvas.configure(yscrollcommand=sb.set)
 
-pclip_slider = ttk.Scale(f_master, from_=1.0, to=1.4, orient='horizontal')
-pclip_slider.set(1.25)
-pclip_slider.pack(fill='x')
-ttk.Label(f_master, text="Positive Ceiling (+125% Loudness Boost)").pack(pady=(0, 10))
+sb.pack(side="right", fill="y")
+canvas.pack(side="left", fill="both", expand=True)
 
-nclip_slider = ttk.Scale(f_master, from_=0.7, to=0.99, orient='horizontal')
-nclip_slider.set(0.95)
-nclip_slider.pack(fill='x')
-ttk.Label(f_master, text="Negative Base Floor (Carrier Protection)").pack(pady=(0, 5))
+content = ttk.Frame(canvas)
+canvas.create_window((0,0), window=content, anchor="nw")
 
-# Attach the live update commands now that all components exist safely in memory
-gain_slider.config(command=lambda v: update_master())
-pclip_slider.config(command=lambda v: update_master())
-nclip_slider.config(command=lambda v: update_master())
+def update_scrollregion(event=None):
+    canvas.configure(scrollregion=canvas.bbox("all"))
+content.bind("<Configure>", update_scrollregion)
 
-# 2. Phase Rotator & Filtering Row
-f_opts = ttk.Frame(root)
-f_opts.pack(fill="x", padx=15, pady=5)
+def on_mousewheel(event):
+    canvas.yview_scroll(int(-1*(event.delta/120)), "units")
+canvas.bind_all("<MouseWheel>", on_mousewheel)
 
-f_rot = ttk.LabelFrame(f_opts, text=" Vocal Symmetry ", padding=10)
-f_rot.pack(side="left", fill="both", expand=True, padx=(0, 5))
-rot_var = tk.BooleanVar(value=True)
-rot_chk = ttk.Checkbutton(f_rot, text="Enable 4-Stage Phase Rotator", variable=rot_var, command=toggle_rotator)
-rot_chk.pack(anchor="w")
+# CONTENT
+left = ttk.Frame(content)
+left.pack(fill="x", padx=4, pady=2)
 
-f_filter = ttk.LabelFrame(f_opts, text=" Final Post-Clip Spectral Mask ", padding=10)
-f_filter.pack(side="right", fill="both", expand=True, padx=(5, 0))
-mask_combo = ttk.Combobox(f_filter, values=["5 kHz", "9 kHz", "10 kHz", "12 kHz", "15 kHz"], state="readonly")
-mask_combo.set("10 kHz")
-mask_combo.bind("<<ComboboxSelected>>", lambda e: send_cmd(f"MASK={['5 kHz','9 kHz','10 kHz','12 kHz','15 kHz'].index(mask_combo.get())}"))
-mask_combo.pack(fill="x")
+f1 = ttk.LabelFrame(left, text="Drive + Limiter", padding=4)
+f1.pack(fill="x", pady=2)
+gain = ttk.Scale(f1, from_=0.5, to=3.0, length=140, orient="h"); gain.set(1); gain.pack(anchor="w")
+ttk.Label(f1, text="Gain").pack(anchor="w")
+pclip = ttk.Scale(f1, from_=1, to=1.4, length=140, orient="h"); pclip.set(1.25); pclip.pack(anchor="w", pady=1)
+ttk.Label(f1, text="+Clip").pack(anchor="w")
+nclip = ttk.Scale(f1, from_=0.5, to=0.99, length=140, orient="h"); nclip.set(0.95); nclip.pack(anchor="w", pady=1)
+ttk.Label(f1, text="-Clip").pack(anchor="w")
+gain.config(command=master); pclip.config(command=master); nclip.config(command=master)
 
-# 3. Multiband Dynamics Column Utility
-def create_band_ui(parent, name):
-    frame = ttk.LabelFrame(parent, text=f" {name} Band Dynamics ", padding=10)
-    frame.pack(side="left", fill="both", expand=True, padx=5, pady=5)
-    
-    ttk.Label(frame, text="Threshold").pack()
-    th = ttk.Scale(frame, from_=0.05, to=1.0, orient='horizontal')
-    th.set(0.3)
-    th.pack(fill='x', pady=2)
-    
-    ttk.Label(frame, text="Compression Ratio").pack()
-    rt = ttk.Scale(frame, from_=1.0, to=10.0, orient='horizontal')
-    rt.set(4.0)
-    rt.pack(fill='x', pady=2)
+# Final output level
+out_gain = ttk.Scale(f1, from_=0.0, to=1.5, length=140, orient="h"); out_gain.set(1.0); out_gain.pack(anchor="w", pady=(4,0))
+ttk.Label(f1, text="Output Level").pack(anchor="w")
+def send_out(v=None): cmd(f"OUTGAIN={out_gain.get():.2f}")
+out_gain.config(command=send_out)
 
-    ttk.Label(frame, text="Attack (ms)").pack(anchor="w")
-    at = ttk.Entry(frame, width=8)
-    at.insert(0, "10")
-    at.pack(fill='x', pady=2)
+ttk.Button(f1, text="Save Flash", command=save).pack(fill="x", pady=3)
 
-    ttk.Label(frame, text="Release (ms)").pack(anchor="w")
-    re = ttk.Entry(frame, width=8)
-    re.insert(0, "100")
-    re.pack(fill='x', pady=2)
-    
-    ttk.Button(frame, text="Apply Band", command=lambda: send_band_settings(name, th, rt, at, re)).pack(fill='x', pady=5)
+def mkband(p, name):
+    f = ttk.LabelFrame(p, text=name, padding=2)
+    f.pack(fill="x", pady=1)
+    th = ttk.Scale(f, from_=0.05, to=1, length=110, orient="h"); th.set(0.3); th.pack(side="left")
+    ttk.Label(f, text="Th").pack(side="left")
+    rt = ttk.Scale(f, from_=1, to=10, length=70, orient="h"); rt.set(4); rt.pack(side="left", padx=2)
+    ttk.Label(f, text="R").pack(side="left")
+    at = ttk.Entry(f, width=3); at.insert(0,"10"); at.pack(side="left", padx=1)
+    re = ttk.Entry(f, width=3); re.insert(0,"100"); re.pack(side="left")
+    def live(v=None): band(name, th, rt, at, re)
+    th.config(command=live); rt.config(command=live)
+    ttk.Button(f, text="Set", width=3, command=lambda: band(name, th, rt, at, re)).pack(side="left", padx=2)
 
-f_bands = ttk.Frame(root)
-f_bands.pack(fill="both", expand=True, padx=10, pady=5)
-create_band_ui(f_bands, "LOW")
-create_band_ui(f_bands, "MID")
-create_band_ui(f_bands, "HIGH")
+mkband(left, "LOW"); mkband(left, "MID"); mkband(left, "HIGH")
 
-# 4. Calibration Deck Panel
-f_gen = ttk.LabelFrame(root, text=" Transmitter Calibration Deck ", padding=10)
-f_gen.pack(fill="x", padx=15, pady=10)
+right = ttk.Frame(content)
+right.pack(fill="x", padx=4, pady=2)
 
-freq_frame = ttk.Frame(f_gen)
-freq_frame.pack(fill="x", pady=5)
-ttk.Label(freq_frame, text="Test Waveform Freq (Hz):").pack(side="left")
-freq_entry = ttk.Entry(freq_frame, width=10)
-freq_entry.insert(0, "400")
-freq_entry.pack(side="left", padx=10)
+f2 = ttk.LabelFrame(right, text="Symmetry", padding=4)
+f2.pack(fill="x")
+rotv = tk.BooleanVar(value=True)
+ttk.Checkbutton(f2, text="Phase Rotator", variable=rotv, command=rot).pack(anchor="w")
 
-gen_var = tk.BooleanVar(value=False)
-gen_btn = ttk.Checkbutton(f_gen, text="Start Calibration Tone", variable=gen_var, command=toggle_generator, style="Toggle.TButton")
-gen_btn.pack(fill="x", pady=5)
+f3 = ttk.LabelFrame(right, text="Mask kHz", padding=4)
+f3.pack(fill="x", pady=2)
+mc = ttk.Combobox(f3, values=["5","9","10","12","15"], width=3, state="readonly"); mc.set("10")
+def msk(e=None): cmd(f"MASK={['5','9','10','12','15'].index(mc.get())}")
+mc.bind("<<ComboboxSelected>>", msk); mc.pack(anchor="w")
+
+f4 = ttk.LabelFrame(right, text="Cal", padding=4)
+f4.pack(fill="x", pady=2)
+ff = ttk.Frame(f4); ff.pack(fill="x")
+ttk.Label(ff, text="Hz").pack(side="left")
+fe = ttk.Entry(ff, width=4); fe.insert(0,"400"); fe.pack(side="left")
+genv = tk.BooleanVar(value=False)
+ttk.Checkbutton(f4, text="Tone", variable=genv, command=gen).pack(anchor="w")
+tiltv = tk.BooleanVar(value=False)
+ttk.Checkbutton(f4, text="Tilt75", variable=tiltv, command=lambda: cmd(f"TILT_EN={1 if tiltv.get() else 0}")).pack(anchor="w")
+ttk.Button(f4, text="Save Flash", command=save).pack(fill="x", pady=2)
+
+root.after(150, master)
+root.after(250, rot)
+root.after(350, msk)
 
 root.mainloop()
-

@@ -2,6 +2,7 @@
 #include "driver/i2s.h" 
 #include <math.h>
 #include "freertos/ringbuf.h"
+#include <Preferences.h>
 
 #define SAMPLE_RATE     44100
 
@@ -31,9 +32,13 @@ struct ProcessorSettings {
     bool generator_on = false;
     float gen_freq = 400.0f;
     bool phase_rotator_on = true; 
+    bool tilt_test_on = false;
+    float tilt_freq = 75.0f;
+    float output_gain = 1.0f;
 };
 
 volatile ProcessorSettings settings;
+Preferences prefs;
 BluetoothA2DPSink a2dp_sink;
 float tone_phase = 0.0f;
 RingbufHandle_t audio_ring_buffer = NULL;
@@ -169,6 +174,12 @@ void dsp_processing_task(void *pvParameters) {
                     float val = sin(tone_phase); left = val; right = val;
                     tone_phase += (2.0f * M_PI * settings.gen_freq) / SAMPLE_RATE;
                     if (tone_phase >= 2.0f * M_PI) tone_phase -= 2.0f * M_PI;
+                } else if (settings.tilt_test_on) {
+                    // Tilt test: 75Hz square wave (lightweight for future CQUAM work)
+                    float val = (tone_phase < M_PI) ? 0.7f : -0.7f;
+                    left = val; right = val;
+                    tone_phase += (2.0f * M_PI * settings.tilt_freq) / SAMPLE_RATE;
+                    if (tone_phase >= 2.0f * M_PI) tone_phase -= 2.0f * M_PI;
                 } else {
                     left = samples[i * 2] / 32768.0f; right = samples[i * 2 + 1] / 32768.0f;
                 }
@@ -207,6 +218,9 @@ void dsp_processing_task(void *pvParameters) {
                 left = maskFilterL2.process(maskFilterL1.process(left));
                 right = maskFilterR2.process(maskFilterR1.process(right));
 
+                left *= settings.output_gain;
+                right *= settings.output_gain;
+
                 samples[i * 2] = (int16_t)(left * 24000.0f); 
                 samples[i * 2 + 1] = (int16_t)(right * 24000.0f);
             }
@@ -239,9 +253,43 @@ void init_i2s() {
     i2s_set_pin(I2S_NUM_0, &pin_config);
 }
 
+void load_settings() {
+    prefs.begin("am_proc", false);
+    settings.master_gain       = prefs.getFloat("master_gain", 1.0f);
+    settings.pos_clip_limit    = prefs.getFloat("pos_clip", 1.25f);
+    settings.neg_clip_limit    = prefs.getFloat("neg_clip", -0.95f);
+    settings.generator_on      = prefs.getBool("gen_on", false);
+    settings.gen_freq          = prefs.getFloat("gen_freq", 400.0f);
+    settings.phase_rotator_on  = prefs.getBool("rot_on", true);
+    settings.tilt_test_on      = prefs.getBool("tilt_on", false);
+    settings.tilt_freq         = prefs.getFloat("tilt_freq", 75.0f);
+    settings.output_gain       = prefs.getFloat("out_gain", 1.0f);
+    settings.mask_selection    = (FilterSelection)prefs.getUChar("mask", MASK_10KHZ);
+
+    settings.low_comp.threshold  = prefs.getFloat("low_th", 0.3f);
+    settings.low_comp.ratio      = prefs.getFloat("low_rt", 4.0f);
+    settings.low_comp.attack_coef  = 1.0f - exp(-1.0f / (SAMPLE_RATE * (prefs.getFloat("low_at", 10.0f) / 1000.0f)));
+    settings.low_comp.release_coef = 1.0f - exp(-1.0f / (SAMPLE_RATE * (prefs.getFloat("low_re", 100.0f) / 1000.0f)));
+
+    settings.mid_comp.threshold  = prefs.getFloat("mid_th", 0.3f);
+    settings.mid_comp.ratio      = prefs.getFloat("mid_rt", 4.0f);
+    settings.mid_comp.attack_coef  = 1.0f - exp(-1.0f / (SAMPLE_RATE * (prefs.getFloat("mid_at", 10.0f) / 1000.0f)));
+    settings.mid_comp.release_coef = 1.0f - exp(-1.0f / (SAMPLE_RATE * (prefs.getFloat("mid_re", 100.0f) / 1000.0f)));
+
+    settings.high_comp.threshold  = prefs.getFloat("high_th", 0.3f);
+    settings.high_comp.ratio      = prefs.getFloat("high_rt", 4.0f);
+    settings.high_comp.attack_coef  = 1.0f - exp(-1.0f / (SAMPLE_RATE * (prefs.getFloat("high_at", 10.0f) / 1000.0f)));
+    settings.high_comp.release_coef = 1.0f - exp(-1.0f / (SAMPLE_RATE * (prefs.getFloat("high_re", 100.0f) / 1000.0f)));
+}
+
+void save_setting(const char* key, float val) { prefs.putFloat(key, val); }
+void save_setting(const char* key, bool val)   { prefs.putBool(key, val); }
+void save_setting(const char* key, uint8_t val){ prefs.putUChar(key, val); }
+
 void setup() {
     Serial.begin(115200);
-    crossover.init(180.0f, 3200.0f); // Balanced broadcast crossover frequencies
+    load_settings();
+    crossover.init(180.0f, 3200.0f);
     update_mask_filter(settings.mask_selection);
     init_i2s();
     
@@ -255,15 +303,37 @@ void setup() {
 void loop() {
     if (Serial.available() > 0) {
         String cmd = Serial.readStringUntil('\n'); cmd.trim();
-        if (cmd.startsWith("GAIN=")) settings.master_gain = cmd.substring(5).toFloat();
-        else if (cmd.startsWith("PCLIP=")) settings.pos_clip_limit = cmd.substring(6).toFloat();
-        else if (cmd.startsWith("NCLIP=")) settings.neg_clip_limit = -fabs(cmd.substring(6).toFloat());
-        else if (cmd.startsWith("TONE_EN=")) settings.generator_on = (cmd.substring(8).toInt() == 1);
-        else if (cmd.startsWith("TONE_FREQ=")) settings.gen_freq = cmd.substring(10).toFloat();
-        else if (cmd.startsWith("ROT_EN=")) settings.phase_rotator_on = (cmd.substring(7).toInt() == 1);
+        
+        if (cmd.startsWith("GAIN=")) { settings.master_gain = cmd.substring(5).toFloat(); save_setting("master_gain", settings.master_gain); }
+        else if (cmd.startsWith("PCLIP=")) { settings.pos_clip_limit = cmd.substring(6).toFloat(); save_setting("pos_clip", settings.pos_clip_limit); }
+        else if (cmd.startsWith("NCLIP=")) { settings.neg_clip_limit = -fabs(cmd.substring(6).toFloat()); save_setting("neg_clip", settings.neg_clip_limit); }
+        else if (cmd.startsWith("TONE_EN=")) { settings.generator_on = (cmd.substring(8).toInt() == 1); save_setting("gen_on", settings.generator_on); }
+        else if (cmd.startsWith("TONE_FREQ=")) { settings.gen_freq = cmd.substring(10).toFloat(); save_setting("gen_freq", settings.gen_freq); }
+        else if (cmd.startsWith("ROT_EN=")) { settings.phase_rotator_on = (cmd.substring(7).toInt() == 1); save_setting("rot_on", settings.phase_rotator_on); }
         else if (cmd.startsWith("MASK=")) {
             settings.mask_selection = (FilterSelection)cmd.substring(5).toInt();
             update_mask_filter(settings.mask_selection);
+            save_setting("mask", (uint8_t)settings.mask_selection);
+        }
+        else if (cmd.startsWith("TILT_EN=")) settings.tilt_test_on = (cmd.substring(8).toInt() == 1);
+        else if (cmd.startsWith("TILT_FREQ=")) settings.tilt_freq = cmd.substring(10).toFloat();
+        else if (cmd.startsWith("OUTGAIN=")) { settings.output_gain = cmd.substring(8).toFloat(); save_setting("out_gain", settings.output_gain); }
+        else if (cmd.startsWith("SAVE")) {
+            // Persist all current settings
+            save_setting("master_gain", settings.master_gain);
+            save_setting("pos_clip", settings.pos_clip_limit);
+            save_setting("neg_clip", settings.neg_clip_limit);
+            save_setting("gen_on", settings.generator_on);
+            save_setting("gen_freq", settings.gen_freq);
+            save_setting("rot_on", settings.phase_rotator_on);
+            save_setting("mask", (uint8_t)settings.mask_selection);
+            save_setting("tilt_on", settings.tilt_test_on);
+            save_setting("tilt_freq", settings.tilt_freq);
+            save_setting("out_gain", settings.output_gain);
+            // Save band settings
+            save_setting("low_th", settings.low_comp.threshold); save_setting("low_rt", settings.low_comp.ratio);
+            save_setting("mid_th", settings.mid_comp.threshold); save_setting("mid_rt", settings.mid_comp.ratio);
+            save_setting("high_th", settings.high_comp.threshold); save_setting("high_rt", settings.high_comp.ratio);
         }
         else if (cmd.startsWith("COMP=")) {
             String data = cmd.substring(5);
@@ -275,21 +345,34 @@ void loop() {
             float rt = data.substring(idx2+1, idx3).toFloat();
             float at = data.substring(idx3+1, idx4).toFloat();
             float rel = data.substring(idx4+1).toFloat();
-
-            // Core 0 calculates transcendental time coefficients natively during slider updates
-            float a_coef = 1.0f - exp(-1.0f / (SAMPLE_RATE * (at / 1000.0f)));
-            float r_coef = 1.0f - exp(-1.0f / (SAMPLE_RATE * (rel / 1000.0f)));
             
+            // 1. Calculate time coefficients on Core 0 right during parsing
+            float calculated_attack_coef  = 1.0f - exp(-1.0f / (SAMPLE_RATE * (at / 1000.0f)));
+            float calculated_release_coef = 1.0f - exp(-1.0f / (SAMPLE_RATE * (rel / 1000.0f)));
+            
+            // 2. Safely capture the correct target struct address
             volatile DynamicsSettings* targetBand = NULL;
             if (band == "LOW")       targetBand = &settings.low_comp;
             else if (band == "MID")  targetBand = &settings.mid_comp;
             else if (band == "HIGH") targetBand = &settings.high_comp;
             
+            // 3. Write data to the actual active variables inside the memory structure
             if (targetBand != NULL) {
-                *(float*)&(targetBand->threshold) = th;
-                *(float*)&(targetBand->ratio) = rt;
-                *(float*)&(targetBand->attack_coef) = a_coef;
-                *(float*)&(targetBand->release_coef) = r_coef;
+                *(float*)&(targetBand->threshold)   = th;
+                *(float*)&(targetBand->ratio)       = rt;
+                *(float*)&(targetBand->attack_coef)  = calculated_attack_coef;
+                *(float*)&(targetBand->release_coef) = calculated_release_coef;
+            }
+            // Persist band settings
+            if (band == "LOW") {
+                save_setting("low_th", th); save_setting("low_rt", rt);
+                save_setting("low_at", at); save_setting("low_re", rel);
+            } else if (band == "MID") {
+                save_setting("mid_th", th); save_setting("mid_rt", rt);
+                save_setting("mid_at", at); save_setting("mid_re", rel);
+            } else if (band == "HIGH") {
+                save_setting("high_th", th); save_setting("high_rt", rt);
+                save_setting("high_at", at); save_setting("high_re", rel);
             }
         }
     }
