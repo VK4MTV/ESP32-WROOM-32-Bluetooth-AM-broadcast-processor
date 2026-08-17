@@ -25,6 +25,7 @@ struct ProcessorSettings {
     DynamicsSettings low_comp;
     DynamicsSettings mid_comp;
     DynamicsSettings high_comp;
+    DynamicsSettings slow_comp;   // NEW: slow single-band AGC/gain rider
     
     float pos_clip_limit = 1.25f;  
     float neg_clip_limit = -0.95f; 
@@ -36,12 +37,44 @@ struct ProcessorSettings {
     bool tilt_test_on = false;
     float tilt_freq = 75.0f;
     float output_gain = 1.0f;
+
+    // Test waveform generator controls
+    uint8_t waveform_type = 0;       // 0=Sine, 1=Square, 2=Sawtooth
+    bool tone_post_clipper = false;  // false=pre-clipper, true=post-clipper (final stage)
 };
 
 volatile ProcessorSettings settings;
 Preferences prefs;
 BluetoothA2DPSink a2dp_sink;
 float tone_phase = 0.0f;
+
+// --- Test Waveform Generator (Sine / Square / Sawtooth with 100% notch) ---
+inline float generate_test_waveform(float phase, uint8_t type) {
+    if (type == 0) { // Sine
+        return sin(phase);
+    } 
+    else if (type == 1) { // Square
+        return (phase < M_PI) ? 0.85f : -0.85f;
+    } 
+    else { // Sawtooth with notch at +100% (for 125% positive swing calibration)
+        // Normalized sawtooth: -1.0 to +1.25 with visible notch at +1.0
+        float t = phase / (2.0f * M_PI); // 0..1
+        float val;
+        if (t < 0.8f) {
+            // Rising from -1.0 to +1.0 (80% of cycle)
+            val = -1.0f + (t / 0.8f) * 2.0f;
+        } else {
+            // Rising from +1.0 to +1.25 (20% of cycle) with small notch at start
+            float t2 = (t - 0.8f) / 0.2f;
+            if (t2 < 0.05f) {
+                val = 1.0f - (t2 / 0.05f) * 0.08f; // small dip/notch at +100%
+            } else {
+                val = 1.0f + (t2 - 0.05f) / 0.95f * 0.25f; // continue to +1.25
+            }
+        }
+        return val;
+    }
+}
 RingbufHandle_t audio_ring_buffer = NULL;
 TaskHandle_t dsp_task_handle = NULL;
 
@@ -105,6 +138,7 @@ struct BandCompressor {
 
 BandCompressor compL_low, compL_mid, compL_high;
 BandCompressor compR_low, compR_mid, compR_high;
+BandCompressor slowAGC_L, slowAGC_R;   // slow single-band gain rider
 
 // --- Biquad & Crossover Infrastructure ---
 struct Biquad {
@@ -177,13 +211,14 @@ void dsp_processing_task(void *pvParameters) {
 
             for (uint32_t i = 0; i < sample_count; i++) {
                 float left, right;
-                if (settings.generator_on) {
-                    float val = sin(tone_phase); left = val; right = val;
+                if (settings.generator_on && !settings.tone_post_clipper) {
+                    // Pre-clipper injection
+                    float val = generate_test_waveform(tone_phase, settings.waveform_type);
+                    left = val; right = val;
                     tone_phase += (2.0f * M_PI * settings.gen_freq) / SAMPLE_RATE;
                     if (tone_phase >= 2.0f * M_PI) tone_phase -= 2.0f * M_PI;
-                } else if (settings.tilt_test_on) {
-                    // Tilt test: 75Hz square wave (lightweight for future CQUAM work)
-                    float val = (tone_phase < M_PI) ? 0.7f : -0.7f;
+                } else if (settings.tilt_test_on && !settings.tone_post_clipper) {
+                    float val = generate_test_waveform(tone_phase, 1); // square for tilt
                     left = val; right = val;
                     tone_phase += (2.0f * M_PI * settings.tilt_freq) / SAMPLE_RATE;
                     if (tone_phase >= 2.0f * M_PI) tone_phase -= 2.0f * M_PI;
@@ -196,6 +231,10 @@ void dsp_processing_task(void *pvParameters) {
                 if (settings.phase_rotator_on && !settings.generator_on) {
                     left = rotatorL.process(left); right = rotatorR.process(right);
                 }
+
+                // Slow single-band AGC / gain rider (before multiband)
+                slowAGC_L.process(left, settings.slow_comp);
+                slowAGC_R.process(right, settings.slow_comp);
 
                 float low_L = crossover.lp2_L.process(crossover.lp1_L.process(left));
                 float high_L = crossover.hp2_L.process(crossover.hp1_L.process(left));
@@ -224,6 +263,17 @@ void dsp_processing_task(void *pvParameters) {
 
                 left = maskFilterL2.process(maskFilterL1.process(left));
                 right = maskFilterR2.process(maskFilterR1.process(right));
+
+                // Post-clipper test tone injection
+                if ((settings.generator_on || settings.tilt_test_on) && settings.tone_post_clipper) {
+                    float freq = settings.generator_on ? settings.gen_freq : settings.tilt_freq;
+                    uint8_t wtype = settings.generator_on ? settings.waveform_type : 1;
+                    float val = generate_test_waveform(tone_phase, wtype);
+                    left = val;
+                    right = val;
+                    tone_phase += (2.0f * M_PI * freq) / SAMPLE_RATE;
+                    if (tone_phase >= 2.0f * M_PI) tone_phase -= 2.0f * M_PI;
+                }
 
                 left *= settings.output_gain;
                 right *= settings.output_gain;
@@ -291,6 +341,12 @@ void load_settings() {
     settings.low_comp.gate_threshold  = prefs.getFloat("low_gate", 0.01f);
     settings.mid_comp.gate_threshold  = prefs.getFloat("mid_gate", 0.01f);
     settings.high_comp.gate_threshold = prefs.getFloat("high_gate", 0.01f);
+
+    settings.slow_comp.threshold  = prefs.getFloat("slow_th", 0.25f);
+    settings.slow_comp.ratio      = prefs.getFloat("slow_rt", 3.0f);
+    settings.slow_comp.attack_coef  = 1.0f - exp(-1.0f / (SAMPLE_RATE * (prefs.getFloat("slow_at", 200.0f) / 1000.0f)));
+    settings.slow_comp.release_coef = 1.0f - exp(-1.0f / (SAMPLE_RATE * (prefs.getFloat("slow_re", 800.0f) / 1000.0f)));
+    settings.slow_comp.gate_threshold = prefs.getFloat("slow_gate", 0.005f);
 }
 
 void save_setting(const char* key, float val) { prefs.putFloat(key, val); }
@@ -328,6 +384,8 @@ void loop() {
         }
         else if (cmd.startsWith("TILT_EN=")) settings.tilt_test_on = (cmd.substring(8).toInt() == 1);
         else if (cmd.startsWith("TILT_FREQ=")) settings.tilt_freq = cmd.substring(10).toFloat();
+        else if (cmd.startsWith("WAVE=")) settings.waveform_type = cmd.substring(5).toInt();
+        else if (cmd.startsWith("TONE_POST=")) settings.tone_post_clipper = (cmd.substring(10).toInt() == 1);
         else if (cmd.startsWith("OUTGAIN=")) { settings.output_gain = cmd.substring(8).toFloat(); save_setting("out_gain", settings.output_gain); }
         else if (cmd.startsWith("SAVE")) {
             // Persist all current settings
@@ -389,6 +447,10 @@ void loop() {
                 save_setting("high_th", th); save_setting("high_rt", rt);
                 save_setting("high_at", at); save_setting("high_re", rel);
                 save_setting("high_gate", gate);
+            } else if (band == "SLOW") {
+                save_setting("slow_th", th); save_setting("slow_rt", rt);
+                save_setting("slow_at", at); save_setting("slow_re", rel);
+                save_setting("slow_gate", gate);
             }
         }
     }

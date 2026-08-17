@@ -103,6 +103,28 @@ def mkband(p, name):
 
 mkband(left, "LOW"); mkband(left, "MID"); mkband(left, "HIGH")
 
+# Slow single-band AGC / gain rider
+slowf = ttk.LabelFrame(left, text="Slow AGC (Gain Rider)", padding=3)
+slowf.pack(fill="x", pady=3)
+
+row1 = ttk.Frame(slowf); row1.pack(fill="x")
+s_th = ttk.Scale(row1, from_=0.05, to=1, length=90, orient="h"); s_th.set(0.25); s_th.pack(side="left")
+ttk.Label(row1, text="Th").pack(side="left")
+s_rt = ttk.Scale(row1, from_=1, to=6, length=60, orient="h"); s_rt.set(3); s_rt.pack(side="left", padx=2)
+ttk.Label(row1, text="R").pack(side="left")
+
+row2 = ttk.Frame(slowf); row2.pack(fill="x", pady=1)
+s_at = ttk.Entry(row2, width=5); s_at.insert(0,"200"); s_at.pack(side="left")
+ttk.Label(row2, text="At ms").pack(side="left")
+s_re = ttk.Entry(row2, width=5); s_re.insert(0,"800"); s_re.pack(side="left", padx=2)
+ttk.Label(row2, text="Re ms").pack(side="left")
+s_gt = ttk.Entry(row2, width=5); s_gt.insert(0,"0.005"); s_gt.pack(side="left", padx=2)
+ttk.Label(row2, text="Gate").pack(side="left")
+
+def live_slow(v=None): band("SLOW", s_th, s_rt, s_at, s_re, s_gt)
+s_th.config(command=live_slow); s_rt.config(command=live_slow)
+ttk.Button(slowf, text="Apply Slow", width=9, command=lambda: band("SLOW", s_th, s_rt, s_at, s_re, s_gt)).pack(fill="x", pady=2)
+
 right = ttk.Frame(content)
 right.pack(fill="x", padx=4, pady=2)
 
@@ -122,6 +144,18 @@ f4.pack(fill="x", pady=2)
 ff = ttk.Frame(f4); ff.pack(fill="x")
 ttk.Label(ff, text="Hz").pack(side="left")
 fe = ttk.Entry(ff, width=4); fe.insert(0,"400"); fe.pack(side="left")
+
+# Waveform type
+wave_var = tk.IntVar(value=0)
+wrow = ttk.Frame(f4); wrow.pack(fill="x", pady=1)
+ttk.Radiobutton(wrow, text="Sine", variable=wave_var, value=0, command=lambda: cmd("WAVE=0")).pack(side="left")
+ttk.Radiobutton(wrow, text="Square", variable=wave_var, value=1, command=lambda: cmd("WAVE=1")).pack(side="left")
+ttk.Radiobutton(wrow, text="Saw", variable=wave_var, value=2, command=lambda: cmd("WAVE=2")).pack(side="left")
+
+# Injection point
+post_var = tk.BooleanVar(value=False)
+ttk.Checkbutton(f4, text="Post-Clipper", variable=post_var, command=lambda: cmd(f"TONE_POST={1 if post_var.get() else 0}")).pack(anchor="w")
+
 genv = tk.BooleanVar(value=False)
 ttk.Checkbutton(f4, text="Tone", variable=genv, command=gen).pack(anchor="w")
 tiltv = tk.BooleanVar(value=False)
