@@ -15,8 +15,9 @@ enum FilterSelection { MASK_5KHZ = 0, MASK_9KHZ, MASK_10KHZ, MASK_12KHZ, MASK_15
 struct DynamicsSettings {
     float threshold = 0.3f; 
     float ratio = 4.0f;     
-    float attack_coef = 0.0022f;  // Pre-calculated for 10ms default
-    float release_coef = 0.00022f; // Pre-calculated for 100ms default
+    float attack_coef = 0.0022f;
+    float release_coef = 0.00022f;
+    float gate_threshold = 0.01f;   // NEW: gate floor
 };
 
 struct ProcessorSettings {
@@ -80,11 +81,17 @@ struct BandCompressor {
         float current_release_coef = *(float*)&(cfg.release_coef);
         float current_threshold    = *(float*)&(cfg.threshold);
         float current_ratio        = *(float*)&(cfg.ratio);
+        float current_gate         = *(float*)&(cfg.gate_threshold);
         
         if (abs_sig > env) {
             env += current_attack_coef * (abs_sig - env);
         } else {
             env += current_release_coef * (abs_sig - env);
+        }
+
+        // Gate: if below gate threshold, skip compression (prevents noise pumping)
+        if (env < current_gate) {
+            return;
         }
 
         if (env > current_threshold && env > 0.0001f) {
@@ -280,6 +287,10 @@ void load_settings() {
     settings.high_comp.ratio      = prefs.getFloat("high_rt", 4.0f);
     settings.high_comp.attack_coef  = 1.0f - exp(-1.0f / (SAMPLE_RATE * (prefs.getFloat("high_at", 10.0f) / 1000.0f)));
     settings.high_comp.release_coef = 1.0f - exp(-1.0f / (SAMPLE_RATE * (prefs.getFloat("high_re", 100.0f) / 1000.0f)));
+
+    settings.low_comp.gate_threshold  = prefs.getFloat("low_gate", 0.01f);
+    settings.mid_comp.gate_threshold  = prefs.getFloat("mid_gate", 0.01f);
+    settings.high_comp.gate_threshold = prefs.getFloat("high_gate", 0.01f);
 }
 
 void save_setting(const char* key, float val) { prefs.putFloat(key, val); }
@@ -344,7 +355,8 @@ void loop() {
             float th = data.substring(idx1+1, idx2).toFloat();
             float rt = data.substring(idx2+1, idx3).toFloat();
             float at = data.substring(idx3+1, idx4).toFloat();
-            float rel = data.substring(idx4+1).toFloat();
+            float rel = data.substring(idx4+1, data.lastIndexOf(',')).toFloat();
+            float gate = data.substring(data.lastIndexOf(',')+1).toFloat();
             
             // 1. Calculate time coefficients on Core 0 right during parsing
             float calculated_attack_coef  = 1.0f - exp(-1.0f / (SAMPLE_RATE * (at / 1000.0f)));
@@ -362,17 +374,21 @@ void loop() {
                 *(float*)&(targetBand->ratio)       = rt;
                 *(float*)&(targetBand->attack_coef)  = calculated_attack_coef;
                 *(float*)&(targetBand->release_coef) = calculated_release_coef;
+                *(float*)&(targetBand->gate_threshold) = gate;
             }
             // Persist band settings
             if (band == "LOW") {
                 save_setting("low_th", th); save_setting("low_rt", rt);
                 save_setting("low_at", at); save_setting("low_re", rel);
+                save_setting("low_gate", gate);
             } else if (band == "MID") {
                 save_setting("mid_th", th); save_setting("mid_rt", rt);
                 save_setting("mid_at", at); save_setting("mid_re", rel);
+                save_setting("mid_gate", gate);
             } else if (band == "HIGH") {
                 save_setting("high_th", th); save_setting("high_rt", rt);
                 save_setting("high_at", at); save_setting("high_re", rel);
+                save_setting("high_gate", gate);
             }
         }
     }

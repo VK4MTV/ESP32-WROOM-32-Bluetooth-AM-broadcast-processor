@@ -21,8 +21,9 @@ def save(): cmd("SAVE")
 def master(v=None):
     cmd(f"GAIN={gain.get():.2f}"); cmd(f"PCLIP={pclip.get():.2f}"); cmd(f"NCLIP={nclip.get():.2f}")
 def rot(): cmd(f"ROT_EN={1 if rotv.get() else 0}")
-def band(n, th, rt, at, re):
-    try: cmd(f"COMP={n},{float(th.get()):.2f},{float(rt.get()):.1f},{float(at.get()):.1f},{float(re.get()):.1f}")
+def band(n, th, rt, at, re, gt=None):
+    g = float(gt.get()) if gt else 0.01
+    try: cmd(f"COMP={n},{float(th.get()):.2f},{float(rt.get()):.1f},{float(at.get()):.1f},{float(re.get()):.1f},{g:.3f}")
     except: pass
 def gen():
     if genv.get(): cmd(f"TONE_FREQ={fe.get()}"); cmd("TONE_EN=1")
@@ -77,17 +78,28 @@ out_gain.config(command=send_out)
 ttk.Button(f1, text="Save Flash", command=save).pack(fill="x", pady=3)
 
 def mkband(p, name):
-    f = ttk.LabelFrame(p, text=name, padding=2)
-    f.pack(fill="x", pady=1)
-    th = ttk.Scale(f, from_=0.05, to=1, length=110, orient="h"); th.set(0.3); th.pack(side="left")
-    ttk.Label(f, text="Th").pack(side="left")
-    rt = ttk.Scale(f, from_=1, to=10, length=70, orient="h"); rt.set(4); rt.pack(side="left", padx=2)
-    ttk.Label(f, text="R").pack(side="left")
-    at = ttk.Entry(f, width=3); at.insert(0,"10"); at.pack(side="left", padx=1)
-    re = ttk.Entry(f, width=3); re.insert(0,"100"); re.pack(side="left")
-    def live(v=None): band(name, th, rt, at, re)
+    f = ttk.LabelFrame(p, text=name+" Band", padding=3)
+    f.pack(fill="x", pady=2)
+    
+    # Row 1: Threshold + Ratio
+    row1 = ttk.Frame(f); row1.pack(fill="x")
+    th = ttk.Scale(row1, from_=0.05, to=1, length=90, orient="h"); th.set(0.3); th.pack(side="left")
+    ttk.Label(row1, text="Th").pack(side="left")
+    rt = ttk.Scale(row1, from_=1, to=10, length=60, orient="h"); rt.set(4); rt.pack(side="left", padx=2)
+    ttk.Label(row1, text="R").pack(side="left")
+    
+    # Row 2: Attack / Release / Gate
+    row2 = ttk.Frame(f); row2.pack(fill="x", pady=1)
+    at = ttk.Entry(row2, width=4); at.insert(0,"10"); at.pack(side="left")
+    ttk.Label(row2, text="At").pack(side="left")
+    re = ttk.Entry(row2, width=4); re.insert(0,"80"); re.pack(side="left", padx=1)
+    ttk.Label(row2, text="Re").pack(side="left")
+    gt = ttk.Entry(row2, width=5); gt.insert(0,"0.01"); gt.pack(side="left", padx=2)
+    ttk.Label(row2, text="Gate").pack(side="left")
+    
+    def live(v=None): band(name, th, rt, at, re, gt)
     th.config(command=live); rt.config(command=live)
-    ttk.Button(f, text="Set", width=3, command=lambda: band(name, th, rt, at, re)).pack(side="left", padx=2)
+    ttk.Button(f, text="Apply", width=5, command=lambda: band(name, th, rt, at, re, gt)).pack(side="right", padx=2)
 
 mkband(left, "LOW"); mkband(left, "MID"); mkband(left, "HIGH")
 
