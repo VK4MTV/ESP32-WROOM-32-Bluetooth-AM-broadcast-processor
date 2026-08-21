@@ -3,4 +3,7 @@ This is a basic Broadcast processor as a starter for Car Bluetooth processor pro
 
 The UI file is the GUI to adjust the settings of the processor
 
-The DAC used is the WCMCU-1334 using the NXP1334A chip
+Uses the PCM5102 chip, so now has potentially better modulation control
+
+Still has a few bugs to investigate, it looks like the asymmetric clippers dont do anything when using the calibration oscillators,
+They are obviously working but only when handling program, so for now to adjust, watch the modulation waveform on the CRO.
