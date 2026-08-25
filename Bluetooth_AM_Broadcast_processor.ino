@@ -311,45 +311,87 @@ void dsp_processing_task(void *pvParameters) {
                 left = maskFilterL2.process(maskFilterL1.process(left));
                 right = maskFilterR2.process(maskFilterR1.process(right));
 
-                // 4. Look-ahead L-R Stereo Limiter (C-QUAM Protection)
-                // Read history from delay lines before overwriting
+                // ========================================================
+                // 4. Look-ahead L-R Stereo Limiter & Phase Protection (FIXED)
+                // ========================================================
+                
+                // 1. Read the delayed samples that have been waiting in the look-ahead window
                 float delayed_L = lr_delay_buffer[lr_write_index][0];
                 float delayed_R = lr_delay_buffer[lr_write_index][1];
-
-                // Write new values into history
+              
+                // 2. Put the CURRENT raw incoming samples into the delay line
                 lr_delay_buffer[lr_write_index][0] = left;
                 lr_delay_buffer[lr_write_index][1] = right;
-
-                // Increment buffer index safely
+                
+                // 3. Move index safely
                 lr_write_index++;
                 if (lr_write_index >= LR_LOOKAHEAD_SAMPLES) {
-                    lr_write_index = 0;
+                   lr_write_index = 0;
                 }
-
-                // Calculate L-R difference envelope
-                float lr_diff = fabs(delayed_L - delayed_R) * 0.5f;
-                if (lr_diff > lr_env) {
-                    lr_env = lr_diff;
+              
+                // 4. Look-ahead Peak Envelope detection using CURRENT samples
+                float current_L_plus_R = (left + right) * 0.5f;
+                float current_L_minus_R = (left - right) * 0.5f;
+                float abs_lr_diff = fabs(current_L_minus_R);
+              
+                // Instant peak capture for look-ahead action
+                if (abs_lr_diff > lr_env) {
+                    lr_env = abs_lr_diff; 
                 } else {
-                    lr_env += 0.0008f * (lr_diff - lr_env);
+                    // Fast decay tailored for high-speed transients
+                    lr_env += 0.002f * (abs_lr_diff - lr_env); 
                 }
-
-                // Apply L-R gain reduction if it threatens carrier phase thresholds
+                 
+                // 5. Calculate gain reduction based on user limits
                 float limit = settings.lr_limit;
-                float knee_start = limit * 0.85f;
+                float knee_start = limit * 0.80f; // Slightly wider knee for smoother tracking
                 float gain_reduction = 1.0f;
-
+              
                 if (lr_env > knee_start) {
                     if (lr_env > limit) {
                         gain_reduction = limit / lr_env;
                     } else {
                         float over = (lr_env - knee_start) / (limit - knee_start);
-                        gain_reduction = 1.0f - (over * over * 0.25f);
+                        gain_reduction = 1.0f - (over * over * 0.20f);
                     }
                 }
-
+              
+                // 6. Apply the tracked gain reduction to the DELAYED samples
                 left = delayed_L * gain_reduction;
                 right = delayed_R * gain_reduction;
+              
+                // 🎯 7. SAFETY NET: Instantaneous Hard Phase-Angle Clipper
+                // This prevents carrier cancellation even if a transient breaks past the envelope follower.
+                // 🎯 FINAL TWEAK: Cross-Matrix Carrier Protection for Mono DSP Radios
+                float post_L_plus_R = (left + right) * 0.5f;
+                float post_L_minus_R = (left - right) * 0.5f;
+                
+                // Calculate the absolute minimum carrier threshold allowed.
+                // If |L-R| approaches or exceeds |L+R|, the carrier dips to zero, causing the tinny sound.
+                // We ensure L-R never exceeds 85% of the current mono carrier envelope.
+                float safe_lr_ceiling = fabs(post_L_plus_R) * 0.85f;
+                
+                // Also respect your user-defined hard limit from the UI settings
+                if (safe_lr_ceiling > settings.lr_limit) {
+                    safe_lr_ceiling = settings.lr_limit;
+                }
+                
+                // Absolute lower bound fallback to keep things stable during silence or low passages
+                if (safe_lr_ceiling < 0.10f) {
+                    safe_lr_ceiling = 0.10f; 
+                }
+                
+                // If the difference signal is too hot for the current carrier level, scale it down smoothly
+                if (fabs(post_L_minus_R) > safe_lr_ceiling) {
+                    float cross_matrix_reduction = safe_lr_ceiling / fabs(post_L_minus_R);
+                    post_L_minus_R *= cross_matrix_reduction;
+                    
+                    // Reconstruct the safe Left and Right channels
+                    left = post_L_plus_R + post_L_minus_R;
+                    right = post_L_plus_R - post_L_minus_R;
+                }
+
+
 
 
                 // ========================================================
