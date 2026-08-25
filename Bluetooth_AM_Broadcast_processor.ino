@@ -301,50 +301,40 @@ void dsp_processing_task(void *pvParameters) {
 
                 // 1. Combine multiband compressor outputs
                 left = low_L + mid_L + high_L;
-                right = low_R + mid_R + high_R;
-
-                // 2. Pre-mask Soft Clipper (keeps things inside spectral bounds)
-                left = (left > settings.pos_clip_limit) ? settings.pos_clip_limit : ((left < settings.neg_clip_limit) ? settings.neg_clip_limit : left);
-                right = (right > settings.pos_clip_limit) ? settings.pos_clip_limit : ((right < settings.neg_clip_limit) ? settings.neg_clip_limit : right);
-
-                // 3. Sharp NRSC Spectral Mask Filter
-                left = maskFilterL2.process(maskFilterL1.process(left));
-                right = maskFilterR2.process(maskFilterR1.process(right));
+                right = low_R + mid_R + high_R; 
 
                 // ========================================================
-                // 4. Look-ahead L-R Stereo Limiter & Phase Protection (FIXED)
+                // 2. 🎯 LOOK-AHEAD PROCESSING BLOCK (Moved ahead of clippers/masks)
                 // ========================================================
                 
-                // 1. Read the delayed samples that have been waiting in the look-ahead window
+                // Read the delayed samples that have been waiting in the look-ahead window
                 float delayed_L = lr_delay_buffer[lr_write_index][0];
                 float delayed_R = lr_delay_buffer[lr_write_index][1];
               
-                // 2. Put the CURRENT raw incoming samples into the delay line
+                // Put the CURRENT raw incoming samples into the delay line
                 lr_delay_buffer[lr_write_index][0] = left;
                 lr_delay_buffer[lr_write_index][1] = right;
                 
-                // 3. Move index safely
+                // Move index safely
                 lr_write_index++;
                 if (lr_write_index >= LR_LOOKAHEAD_SAMPLES) {
                    lr_write_index = 0;
                 }
               
-                // 4. Look-ahead Peak Envelope detection using CURRENT samples
+                // Look-ahead Peak Envelope detection using CURRENT raw samples
                 float current_L_plus_R = (left + right) * 0.5f;
                 float current_L_minus_R = (left - right) * 0.5f;
                 float abs_lr_diff = fabs(current_L_minus_R);
               
-                // Instant peak capture for look-ahead action
                 if (abs_lr_diff > lr_env) {
-                    lr_env = abs_lr_diff; 
+                    lr_env = abs_lr_diff; // Instant capture on upcoming transient edge
                 } else {
-                    // Fast decay tailored for high-speed transients
-                    lr_env += 0.002f * (abs_lr_diff - lr_env); 
+                    lr_env += 0.005f * (abs_lr_diff - lr_env); // Snappy release
                 }
                  
-                // 5. Calculate gain reduction based on user limits
+                // Calculate gain reduction based on user limits
                 float limit = settings.lr_limit;
-                float knee_start = limit * 0.80f; // Slightly wider knee for smoother tracking
+                float knee_start = limit * 0.80f; 
                 float gain_reduction = 1.0f;
               
                 if (lr_env > knee_start) {
@@ -356,84 +346,91 @@ void dsp_processing_task(void *pvParameters) {
                     }
                 }
               
-                // 6. Apply the tracked gain reduction to the DELAYED samples
+                // Apply the tracked gain reduction to the DELAYED samples
                 left = delayed_L * gain_reduction;
                 right = delayed_R * gain_reduction;
               
-                // 🎯 7. SAFETY NET: Instantaneous Hard Phase-Angle Clipper
-                // This prevents carrier cancellation even if a transient breaks past the envelope follower.
-                // 🎯 FINAL TWEAK: Cross-Matrix Carrier Protection for Mono DSP Radios
+                // Cross-Matrix Carrier Protection for Mono DSP Radios
                 float post_L_plus_R = (left + right) * 0.5f;
                 float post_L_minus_R = (left - right) * 0.5f;
-                
-                // Calculate the absolute minimum carrier threshold allowed.
-                // If |L-R| approaches or exceeds |L+R|, the carrier dips to zero, causing the tinny sound.
-                // We ensure L-R never exceeds 85% of the current mono carrier envelope.
                 float safe_lr_ceiling = fabs(post_L_plus_R) * 0.85f;
                 
-                // Also respect your user-defined hard limit from the UI settings
                 if (safe_lr_ceiling > settings.lr_limit) {
                     safe_lr_ceiling = settings.lr_limit;
                 }
-                
-                // Absolute lower bound fallback to keep things stable during silence or low passages
                 if (safe_lr_ceiling < 0.10f) {
                     safe_lr_ceiling = 0.10f; 
                 }
                 
-                // If the difference signal is too hot for the current carrier level, scale it down smoothly
                 if (fabs(post_L_minus_R) > safe_lr_ceiling) {
                     float cross_matrix_reduction = safe_lr_ceiling / fabs(post_L_minus_R);
                     post_L_minus_R *= cross_matrix_reduction;
-                    
-                    // Reconstruct the safe Left and Right channels
                     left = post_L_plus_R + post_L_minus_R;
                     right = post_L_plus_R - post_L_minus_R;
                 }
 
-
-
-
                 // ========================================================
-                // 5. 🎯 TARGET INJECTION POINT: Calibration Oscillator
+                // 3. 🎯 TARGET INJECTION POINT: Pre-Clipper Calibration Tone
                 // ========================================================
-                // Injected AFTER L-R limiting but BEFORE the final Asymmetric Clipper
-                if (settings.generator_on || settings.tilt_test_on) {
+                if ((settings.generator_on || settings.tilt_test_on) && !settings.tone_post_clipper) {
                     float freq = settings.generator_on ? settings.gen_freq : settings.tilt_freq;
-                    uint8_t wtype = settings.generator_on ? settings.waveform_type : 1; // 1 = Square for tilt test
+                    uint8_t wtype = settings.generator_on ? settings.waveform_type : 1; 
                     
                     float val = generate_test_waveform(tone_phase, wtype);
                     left = val; 
-                    right = val; // True mono injection to test carrier balancing
+                    right = val; 
                     
                     tone_phase += (2.0f * M_PI * freq) / SAMPLE_RATE;
                     if (tone_phase >= 2.0f * M_PI) tone_phase -= 2.0f * M_PI;
                 }
 
+                // ========================================================
+                // 4. Pre-mask Soft Clipper (Now acts strictly as a micro peak guard)
+                // ========================================================
+                left = (left > settings.pos_clip_limit) ? settings.pos_clip_limit : ((left < settings.neg_clip_limit) ? settings.neg_clip_limit : left);
+                right = (right > settings.pos_clip_limit) ? settings.pos_clip_limit : ((right < settings.neg_clip_limit) ? settings.neg_clip_limit : right);
+
+                // ========================================================
+                // 5. Sharp NRSC Spectral Mask Filter
+                // ========================================================
+                left = maskFilterL2.process(maskFilterL1.process(left));
+                right = maskFilterR2.process(maskFilterR1.process(right));
+
                 // Apply final output makeup gain
                 left *= settings.output_gain;
                 right *= settings.output_gain;
 
+                // ========================================================
+                // 6. 🎯 TARGET INJECTION POINT: Post-Clipper Calibration Tone
+                // ========================================================
+                if ((settings.generator_on || settings.tilt_test_on) && settings.tone_post_clipper) {
+                    float freq = settings.generator_on ? settings.gen_freq : settings.tilt_freq;
+                    uint8_t wtype = settings.generator_on ? settings.waveform_type : 1; 
+                    
+                    float val = generate_test_waveform(tone_phase, wtype);
+                    left = val; 
+                    right = val; 
+                    
+                    tone_phase += (2.0f * M_PI * freq) / SAMPLE_RATE;
+                    if (tone_phase >= 2.0f * M_PI) tone_phase -= 2.0f * M_PI;
+                }
 
                 // ========================================================
-                // 6. 🔒 BRICK-WALL ASYMMETRIC OUTPUT CLIPPER
+                // 7. BRICK-WALL ASYMMETRIC OUTPUT SAFETY CLIPPER
                 // ========================================================
-                // This protects your AM transmitter from overmodulating positive peaks (+125%) 
-                // and clipping negative carrier peaks completely (-95%).
                 if (left > settings.pos_clip_limit)       left = settings.pos_clip_limit;
                 else if (left < settings.neg_clip_limit)  left = settings.neg_clip_limit;
 
                 if (right > settings.pos_clip_limit)      right = settings.pos_clip_limit;
                 else if (right < settings.neg_clip_limit) right = settings.neg_clip_limit;
 
-
-                // 7. Safe conversion back to 16-bit PCM Space for DAC output
-                // (Removed the secondary trailing tone generator that overrode everything!)
+                // 8. Safe conversion back to 16-bit PCM Space for DAC output
                 samples[i * 2]     = (int16_t)(left * 24000.0f); 
                 samples[i * 2 + 1] = (int16_t)(right * 24000.0f);
             }
 
             size_t bytes_written;
+
             // Using modern explicit casting for ring buffer blocks
             i2s_channel_write(tx_handle, (const void *)buffer, item_size, &bytes_written, pdMS_TO_TICKS(20));
             
@@ -524,7 +521,7 @@ void setup() {
     delay(500); 
     
     load_settings();
-    crossover.init(180.0f, 3200.0f);
+    crossover.init(360.0f, 3600.0f);
     update_mask_filter(settings.mask_selection);
     
     // Initialize the new, warning-free modern I2S hardware channel

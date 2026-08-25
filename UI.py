@@ -20,11 +20,10 @@ def cmd(s):
 def save_to_esp(): cmd("SAVE")
 
 # ========================================================
-# 🎯 FIX: ISOLATED ASYMMETRIC SERIAL COMMANDS
+# SERIAL COMMAND ENGINE
 # ========================================================
 
 def send_master(v=None):
-    # Fallback mass broadcaster
     try:
         cmd(f"GAIN={float(gain.get()):.2f}")
         cmd(f"PCLIP={float(pclip.get()):.2f}")
@@ -33,14 +32,11 @@ def send_master(v=None):
     except Exception as e:
         print("Send master error:", e)
 
-# Dedicated individual callback functions for immediate response
 def send_gain(v=None):    cmd(f"GAIN={float(gain.get()):.2f}")
 def send_pclip(v=None):   cmd(f"PCLIP={float(pclip.get()):.2f}")
 def send_nclip(v=None):   cmd(f"NCLIP={float(nclip.get()):.2f}")
 def send_outgain(v=None): cmd(f"OUTGAIN={float(outg.get()):.2f}")
-
-
-def send_rot(): cmd(f"ROT_EN={1 if rotv.get() else 0}")
+def send_rot():           cmd(f"ROT_EN={1 if rotv.get() else 0}")
 
 def send_band(name, th, rt, at, re, gt):
     try:
@@ -51,19 +47,20 @@ def send_slow():
     try:
         cmd(f"COMP=SLOW,{float(s_th.get()):.2f},{float(s_rt.get()):.1f},{float(s_at.get()):.1f},{float(s_re.get()):.1f},{float(s_gt.get()):.3f}")
     except: pass
-    
-# === ADD / UPDATE THESE UI COMMAND FUNCTIONS ===
 
-def send_tilt():
-    # Send both the state AND the current frequency whenever the tilt interface updates
-    if tiltv.get():
-        # Assumes your tilt frequency variable will be named 'tilt_f' in the upcoming layout code
-        try:
-            cmd(f"TILT_FREQ={float(tilt_f.get()):.1f}")
-        except: pass
-        cmd("TILT_EN=1")
+# --- FIXED: Unified Calibration System Commands ---
+def send_gen():
+    if genv.get():
+        cmd(f"TONE_FREQ={fe.get()}")
+        cmd("TONE_EN=1")
     else:
-        cmd("TILT_EN=0")
+        cmd("TONE_EN=0")
+
+def send_wave(): 
+    cmd(f"WAVE={wave_var.get()}")
+
+def send_post(): 
+    cmd(f"TONE_POST={1 if post_var.get() else 0}")
 
 def send_tilt_freq(v=None):
     try:
@@ -73,27 +70,17 @@ def send_tilt_freq(v=None):
 
 def send_tilt():
     if tiltv.get():
-        send_tilt_freq() # Send frequency first
+        send_tilt_freq()
         cmd("TILT_EN=1")
     else:
         cmd("TILT_EN=0")
 
-def send_gen():
-    if genv.get():
-        cmd(f"TONE_FREQ={fe.get()}")
-        cmd("TONE_EN=1")
-    else:
-        cmd("TONE_EN=0")
-
-
-def send_wave(): cmd(f"WAVE={wave_var.get()}")
-def send_post(): cmd(f"TONE_POST={1 if post_var.get() else 0}")
-def send_tilt(): cmd(f"TILT_EN={1 if tiltv.get() else 0}")
-
 def update_label(slider, lbl, fmt="{:.2f}"):
     lbl.config(text=fmt.format(float(slider.get())))
 
-# ============== PRESET SYSTEM ==============
+# ========================================================
+# PRESET FILE MANAGEMENT
+# ========================================================
 def save_preset():
     path = filedialog.asksaveasfilename(defaultextension=".txt", filetypes=[("Preset","*.txt")])
     if not path: return
@@ -106,9 +93,9 @@ def save_preset():
         f.write(f"ROT={1 if rotv.get() else 0}\n")
         f.write(f"MASK={mc.get()}\n")
         
-        # === FIX: Save Tilt State and Frequency to File ===
+        # FIXED: Core tracking references extraction functions safely
         f.write(f"TILT_EN={1 if tiltv.get() else 0}\n")
-        f.write(f"TILT_FREQ={tilt_f.get()}\n")
+        f.write(f"TILT_FREQ={tilt_slider.get():.1f}\n")
         
         f.write(f"LOW_TH={low_th.get():.3f}\nLOW_RT={low_rt.get():.2f}\nLOW_AT={low_at.get()}\nLOW_RE={low_re.get()}\nLOW_GATE={low_gt.get()}\n")
         f.write(f"MID_TH={mid_th.get():.3f}\nMID_RT={mid_rt.get():.2f}\nMID_AT={mid_at.get()}\nMID_RE={mid_re.get()}\nMID_GATE={mid_gt.get()}\n")
@@ -126,6 +113,7 @@ def load_preset():
             if line.startswith("#") or not line: continue
             k, v = line.split("=", 1)
             vals[k] = v
+            
     if "GAIN" in vals: gain.set(float(vals["GAIN"]))
     if "PCLIP" in vals: pclip.set(float(vals["PCLIP"]))
     if "NCLIP" in vals: nclip.set(float(vals["NCLIP"]))
@@ -133,9 +121,8 @@ def load_preset():
     if "ROT" in vals: rotv.set(int(vals["ROT"]))
     if "MASK" in vals: mc.set(vals["MASK"])
     
-    # === FIX: Parse Tilt parameters from text file if present ===
     if "TILT_EN" in vals: tiltv.set(int(vals["TILT_EN"]))
-    if "TILT_FREQ" in vals: tilt_f.set(float(vals["TILT_FREQ"]))
+    if "TILT_FREQ" in vals: tilt_slider.set(float(vals["TILT_FREQ"]))
         
     if "LOW_TH" in vals: low_th.set(float(vals["LOW_TH"]))
     if "LOW_RT" in vals: low_rt.set(float(vals["LOW_RT"]))
@@ -160,26 +147,24 @@ def load_preset():
 
     send_master()
     send_rot()
-    
-    # === FIX: Force the layout engine to broadcast the tilt variables over Serial ===
     send_tilt() 
-    
     send_band("LOW", low_th, low_rt, low_at, low_re, low_gt)
     send_band("MID", mid_th, mid_rt, mid_at, mid_re, mid_gt)
     send_band("HIGH", high_th, high_rt, high_at, high_re, high_gt)
     send_slow()
     print("Preset loaded:", path)
 
-
-# ============== UI ==============
+# ========================================================
+# USER INTERFACE SYSTEM
+# ========================================================
 root = tk.Tk()
 root.title("AM Broadcast Processor")
-root.geometry("520x520")
+root.geometry("540x550")
 
 tk.Label(root, text=f"Online: {PORT}" if ser else "OFFLINE", 
          bg="#2ecc71" if ser else "#e74c3c", fg="white").pack(fill="x")
 
-canvas = tk.Canvas(root, highlightthickness=0, height=460)
+canvas = tk.Canvas(root, highlightthickness=0, height=480)
 sb = ttk.Scrollbar(root, orient="vertical", command=canvas.yview)
 canvas.configure(yscrollcommand=sb.set)
 sb.pack(side="right", fill="y")
@@ -193,9 +178,9 @@ content.bind("<Configure>", update_scroll)
 canvas.bind_all("<MouseWheel>", lambda e: canvas.yview_scroll(int(-1*(e.delta/120)), "units"))
 
 left = ttk.Frame(content)
-left.pack(fill="x", padx=6, pady=4)
+left.pack(side="left", fill="both", expand=True, padx=6, pady=4)
 
-# === DRIVE + LIMITER ===
+# --- DRIVE + LIMITER ---
 f1 = ttk.LabelFrame(left, text="Drive + Limiter", padding=5)
 f1.pack(fill="x", pady=3)
 
@@ -211,7 +196,6 @@ def make_slider(parent, text, frm, to, default, cmd_func, fmt="{:.2f}"):
     lbl = ttk.Label(row, text=fmt.format(default), width=6)
     lbl.pack(side="left")
     
-    # Pass the actual value directly down into your targeted hardware functions
     sl.config(command=lambda val: (cmd_func(val), update_label(sl, lbl, fmt)))
     return sl, lbl
 
@@ -220,18 +204,7 @@ pclip, _ = make_slider(f1, "+Clip", 1.0, 1.4, 1.25, send_pclip)
 nclip, _ = make_slider(f1, "-Clip", 0.5, 0.99, 0.95, send_nclip)
 outg, _ = make_slider(f1, "OutLevel", 0.0, 1.5, 1.0, send_outgain)
 
-
-# ========================================================
-# 🎯 CALIBRATION & TEST INTERFACE PANEL
-# ========================================================
-
-
-
-# --------------------------------------------------------
-# 🎛️ THE TILT TEST NETWORK
-# --------------------------------------------------------
-
-# === 3-BAND COMPRESSOR ===
+# --- 3-BAND COMPRESSOR LAYOUT ---
 def make_band(parent, name, th_def=0.3, rt_def=4.0):
     f = ttk.LabelFrame(parent, text=name+" Band", padding=4)
     f.pack(fill="x", pady=2)
@@ -250,16 +223,10 @@ def make_band(parent, name, th_def=0.3, rt_def=4.0):
     re = ttk.Entry(row2, width=5); re.insert(0,"80"); re.pack(side="left", padx=2)
     gt = ttk.Entry(row2, width=6); gt.insert(0,"0.01"); gt.pack(side="left", padx=2)
 
-    # Live update on focus out or Return key
-    def live_send(event=None):
-        send_band(name, th, rt, at, re, gt)
-    at.bind("<FocusOut>", live_send)
-    at.bind("<Return>", live_send)
-    re.bind("<FocusOut>", live_send)
-    re.bind("<Return>", live_send)
-    gt.bind("<FocusOut>", live_send)
-    gt.bind("<Return>", live_send)
-
+    def live_send(event=None): send_band(name, th, rt, at, re, gt)
+    at.bind("<FocusOut>", live_send); at.bind("<Return>", live_send)
+    re.bind("<FocusOut>", live_send); re.bind("<Return>", live_send)
+    gt.bind("<FocusOut>", live_send); gt.bind("<Return>", live_send)
     return th, rt, at, re, gt
 
 low_th, low_rt, low_at, low_re, low_gt   = make_band(left, "LOW")
@@ -284,19 +251,17 @@ s_at = ttk.Entry(row2, width=5); s_at.insert(0,"400"); s_at.pack(side="left")
 s_re = ttk.Entry(row2, width=5); s_re.insert(0,"2000"); s_re.pack(side="left", padx=2)
 s_gt = ttk.Entry(row2, width=6); s_gt.insert(0,"0.005"); s_gt.pack(side="left", padx=2)
 
-# Live update for Slow AGC timing fields
-def live_slow_send(event=None):
+def live_slow_send(event=None): 
     send_slow()
-s_at.bind("<FocusOut>", live_slow_send)
-s_at.bind("<Return>", live_slow_send)
-s_re.bind("<FocusOut>", live_slow_send)
-s_re.bind("<Return>", live_slow_send)
-s_gt.bind("<FocusOut>", live_slow_send)
-s_gt.bind("<Return>", live_slow_send)
 
-# === RIGHT COLUMN ===
+s_at.bind("<FocusOut>", live_slow_send); s_at.bind("<Return>", live_slow_send)
+s_re.bind("<FocusOut>", live_slow_send); s_re.bind("<Return>", live_slow_send)
+s_gt.bind("<FocusOut>", live_slow_send); s_gt.bind("<Return>", live_slow_send)
+
+
+# === RIGHT PANEL ===
 right = ttk.Frame(content)
-right.pack(fill="x", padx=6, pady=4)
+right.pack(side="right", fill="both", expand=True, padx=6, pady=4)
 
 f_sym = ttk.LabelFrame(right, text="Symmetry", padding=4)
 f_sym.pack(fill="x")
@@ -310,15 +275,14 @@ mc.set("10")
 mc.bind("<<ComboboxSelected>>", lambda e: cmd(f"MASK={['5','9','10','12','15'].index(mc.get())}"))
 mc.pack(anchor="w")
 
-# ACMA HPF (always on)
 f_hpf = ttk.LabelFrame(right, text="ACMA HPF (Always On)", padding=4)
 f_hpf.pack(fill="x", pady=3)
-hpf_var = tk.IntVar(value=50)
 hpf_combo = ttk.Combobox(f_hpf, values=["50","60","70","80","90","100"], width=4, state="readonly")
 hpf_combo.set("50")
 hpf_combo.bind("<<ComboboxSelected>>", lambda e: cmd(f"HPF={hpf_combo.get()}"))
 hpf_combo.pack(anchor="w")
 
+# --- CLEAN CALIBRATION NETWORK ---
 f_cal = ttk.LabelFrame(right, text="Calibration & Test Network", padding=4)
 f_cal.pack(fill="x", pady=2)
 
@@ -345,23 +309,16 @@ ttk.Separator(f_cal, orient="horizontal").pack(fill="x", pady=4)
 tiltv = tk.BooleanVar(value=False)
 ttk.Checkbutton(f_cal, text="Enable LF Tilt Test (Square)", variable=tiltv, command=send_tilt).pack(anchor="w")
 
-def on_tilt_slider_change(v=None):
-    send_tilt_freq()
-    update_label(tilt_slider, tilt_lbl, "{:.1f}")
-
 tilt_row = ttk.Frame(f_cal)
 tilt_row.pack(fill="x", pady=2)
 ttk.Label(tilt_row, text="Tilt Freq:", width=8).pack(side="left")
-tilt_slider, tilt_lbl = make_slider(f_cal, "Tilt Freq", 20.0, 200.0, 75.0, on_tilt_slider_change, fmt="{:.1f}")
+
+tilt_slider = ttk.Scale(tilt_row, from_=20.0, to=200.0, orient="h", command=lambda v: (send_tilt_freq(), update_label(tilt_slider, tilt_lbl, "{:.1f}")))
 tilt_slider.set(75.0)
 tilt_slider.pack(side="left", padx=3, fill="x", expand=True)
 
-#tilt_slider, tilt_lbl = make_slider(f_cal, "Tilt Freq", 20.0, 200.0, 75.0, on_tilt_slider_change, fmt="{:.1f}")
-
 tilt_lbl = ttk.Label(tilt_row, text="75.0", width=5)
 tilt_lbl.pack(side="left")
-
-tilt_f = tilt_slider
 
 f_pre = ttk.LabelFrame(right, text="Presets", padding=4)
 f_pre.pack(fill="x", pady=4)
@@ -372,3 +329,4 @@ root.after(200, send_master)
 root.after(300, send_rot)
 root.after(500, lambda: cmd(f"HPF={hpf_combo.get()}"))
 root.mainloop()
+
