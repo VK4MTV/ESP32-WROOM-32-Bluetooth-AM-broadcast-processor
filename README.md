@@ -10,6 +10,18 @@ Over-modulation of AM transmitters have serious consequences causing splatter an
 Hobby low power use only until extensive tests and debugging has been done
 *************************************€****
 
+
+********************************
+Issues to rectify in performance optimisation! 
+********************************
+
+Seems now the WROOM32 is at its limits, when programming gets dense, theres minimal perceived distortion, it never overmodulates now but the CPU struggles. 
+
+Modulation appears to be very well managed at this point which is the goal, this processor has reached a point where now it’s preserving both the I and Q channels flawlessly as observed in the Oscilloscope and Modulation monitor with minimal perceived distortion in the processing, it just gets audibly more dense the more sonically brutal the track gets, the constraints of 512KB RAM and CPU resources is the challenge now as I find ways around this performance wall I just hit, I do not want to compromise on the quality of the processing, I prefer to move forward with any means possible, if I can’t get past this wall, I will consider moving up to the WROVER which is the same as the WROOM but with extended RAM, or moving to the S3 that has much more powerful floating point math units and resource with much bigger RAM, just the S3 does not support classic Bluetooth for backwards compatibility to work with all phones, requires a dedicated Bluetooth transceiver at added cost.
+
+I will keep you updated in this development as always. cheers.
+********************
+
 ABOUT THIS PROCESSOR:
 This is a basic Broadcast processor as a starter for Car Bluetooth Transmitter projects that lacks this feature, Current FM Transmitters suffer from Sibilance and distortion, this is a new build to address this issue, This is the AM version which is C-QUAM compatible.
 
