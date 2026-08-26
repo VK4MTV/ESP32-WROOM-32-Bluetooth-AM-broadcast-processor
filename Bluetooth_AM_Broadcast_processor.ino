@@ -10,9 +10,8 @@
 #define I2S_BCK_IO      (GPIO_NUM_26)  
 #define I2S_WS_IO       (GPIO_NUM_25)  
 #define I2S_DO_IO       (GPIO_NUM_22)  
-//#define I2S_MCK_IO      (GPIO_NUM_33) (Not used - SCK tied to GND)
 
- enum FilterSelection { MASK_5KHZ = 0, MASK_9KHZ, MASK_10KHZ, MASK_12KHZ, MASK_15KHZ };
+enum FilterSelection { MASK_5KHZ = 0, MASK_9KHZ, MASK_10KHZ, MASK_12KHZ, MASK_15KHZ };
 
 struct DynamicsSettings {
     float threshold = 0.3f; 
@@ -55,13 +54,11 @@ float tone_phase = 0.0f;
 // Modern v3 framework handle for your I2S audio output
 i2s_chan_handle_t tx_handle = NULL; 
 
-// === PASTE THESE HERE IF THEY ARE MISSING ===
 RingbufHandle_t audio_ring_buffer = NULL;
 TaskHandle_t dsp_task_handle = NULL;
 
 volatile uint32_t audio_packets_received = 0;
 volatile uint32_t audio_packets_dropped = 0;
-
 
 // --- Phase Rotator (All-Pass Filters at ~200Hz) ---
 struct AllPassFilter {
@@ -110,7 +107,7 @@ struct BandCompressor {
 };
 
 // === Look-ahead L-R Stereo Limiter (CQUAM) ===
-#define LR_LOOKAHEAD_SAMPLES  441
+#define LR_LOOKAHEAD_SAMPLES  220
 float lr_delay_buffer[LR_LOOKAHEAD_SAMPLES][2];
 int lr_write_index = 0;
 float lr_env = 0.0f;
@@ -164,48 +161,37 @@ struct LRCrossover3Band {
 LRCrossover3Band crossover;
 Biquad maskFilterL1, maskFilterL2, maskFilterR1, maskFilterR2;
 
-// Test waveform generator (injected just before final clipper)
 inline float generate_test_waveform(float phase, uint8_t type) {
-    float t = phase / (2.0f * M_PI); // Normalized time: 0.0 to 1.0
-
-    if (type == 0) { // Sine
+    float t = phase / (2.0f * M_PI);
+    if (type == 0) { 
         return sin(phase);
     } 
-    else if (type == 1) { // Square Wave (Tilt Test)
+    else if (type == 1) { 
         return (t < 0.50f) ? 1.0f : -1.0f; 
     } 
-    else if (type == 2) { // Modified Saw (Falling) with 5% flat hold at +100%
-        // Cycle breakdown: 
-        // 0.00 -> 0.05 (5%): Flat hold at exactly +1.00 (100%)
-        // 0.05 -> 0.10 (5%): Smooth rise from +1.00 up to +1.25 (Peak test)
-        // 0.10 -> 1.00 (90%): Linear fall from +1.25 down to -1.00
+    else if (type == 2) { 
         if (t < 0.05f) {
-            return 1.0f; // 5% Flat plateau at 100% modulation
+            return 1.0f; 
         } else if (t < 0.10f) {
             float ramp = (t - 0.05f) / 0.05f; 
-            return 1.0f + (ramp * 0.25f); // Rises cleanly to 1.25
+            return 1.0f + (ramp * 0.25f); 
         } else {
             float ramp = (t - 0.10f) / 0.90f;
-            return 1.25f - (ramp * 2.25f); // Falls linearly from +1.25 to -1.00
+            return 1.25f - (ramp * 2.25f); 
         }
     } 
-    else { // Modified Saw (Rising) with 5% flat hold at +100%
-        // Cycle breakdown:
-        // 0.00 -> 0.90 (90%): Linear rise from -1.00 up to +1.00
-        // 0.90 -> 0.95 (5%): Flat hold at exactly +1.00 (100%)
-        // 0.95 -> 1.00 (5%): Final peak punch from +1.00 up to +1.25
+    else { 
         if (t < 0.90f) {
             float ramp = t / 0.90f;
-            return -1.0f + (ramp * 2.0f); // Rises from -1.00 to +1.00
+            return -1.0f + (ramp * 2.0f); 
         } else if (t < 0.95f) {
-            return 1.0f; // 5% Flat plateau at 100% modulation
+            return 1.0f; 
         } else {
             float ramp = (t - 0.95f) / 0.05f;
-            return 1.0f + (ramp * 0.25f); // Final 25% peak punch up to 1.25
+            return 1.0f + (ramp * 0.25f); 
         }
     }
 }
-
 
 void update_mask_filter(FilterSelection selection) {
     float freq = 10000.0f;
@@ -223,29 +209,22 @@ void audio_data_callback(const uint8_t *data, uint32_t length) {
     if (audio_ring_buffer != NULL) {
         BaseType_t status = xRingbufferSend(audio_ring_buffer, (void*)data, length, 0);
         if (status == pdTRUE) {
-            // Safe replacement for audio_packets_received++;
             __atomic_fetch_add(&audio_packets_received, 1, __ATOMIC_SEQ_CST);
         } else {
-            // Safe replacement for audio_packets_dropped++;
             __atomic_fetch_add(&audio_packets_dropped, 1, __ATOMIC_SEQ_CST);
         }
     }
 }
 
-
-
 void dsp_processing_task(void *pvParameters) {
     size_t item_size;
-    
-    // Move filter configurations completely outside the active while(1) loop 
-    // to save massive stack space!
     Biquad hpfL, hpfR;
     uint8_t last_hpf = 0;
     hpfL.setHPF(settings.hpf_freq, 0.707f);
     hpfR.setHPF(settings.hpf_freq, 0.707f);
 
     while (1) {
-        uint8_t *buffer = (uint8_t *)xRingbufferReceive(audio_ring_buffer, &item_size, portMAX_DELAY);
+        uint8_t *buffer = (uint8_t *)xRingbufferReceive(audio_ring_buffer, &item_size, pdMS_TO_TICKS(50));
         if (buffer != NULL) {
             int16_t *samples = (int16_t*) buffer;
             uint32_t sample_count = item_size / 4; 
@@ -267,7 +246,6 @@ void dsp_processing_task(void *pvParameters) {
                     right = rotatorR.process(right);
                 }
 
-                // Cleaned HPF check
                 if (settings.hpf_freq != last_hpf) {
                     float f = (settings.hpf_freq < 50) ? 50 : ((settings.hpf_freq > 100) ? 100 : settings.hpf_freq);
                     hpfL.setHPF(f, 0.707f);
@@ -277,11 +255,9 @@ void dsp_processing_task(void *pvParameters) {
                 left  = hpfL.process(left);
                 right = hpfR.process(right);
 
-                // Slow AGC
                 slowAGC_L.process(left, settings.slow_comp);
                 slowAGC_R.process(right, settings.slow_comp);
 
-                // 3-band crossover + compression
                 float low_L = crossover.lp2_L.process(crossover.lp1_L.process(left));
                 float high_L = crossover.hp2_L.process(crossover.hp1_L.process(left));
                 float mid_L = crossover.lp4_L.process(crossover.lp3_L.process(high_L));
@@ -299,42 +275,36 @@ void dsp_processing_task(void *pvParameters) {
                 compR_mid.process(mid_R, settings.mid_comp);
                 compR_high.process(high_R, settings.high_comp);
 
-                // 1. Combine multiband compressor outputs
                 left = low_L + mid_L + high_L;
                 right = low_R + mid_R + high_R; 
 
                 // ========================================================
-                // 2. 🎯 LOOK-AHEAD PROCESSING BLOCK (Moved ahead of clippers/masks)
+                // 4. Look-ahead L-R Stereo Limiter & Phase Protection 
                 // ========================================================
-                
-                // Read the delayed samples that have been waiting in the look-ahead window
+                if (lr_write_index >= LR_LOOKAHEAD_SAMPLES || lr_write_index < 0) {
+                    lr_write_index = 0;
+                }
+
                 float delayed_L = lr_delay_buffer[lr_write_index][0];
                 float delayed_R = lr_delay_buffer[lr_write_index][1];
               
-                // Put the CURRENT raw incoming samples into the delay line
                 lr_delay_buffer[lr_write_index][0] = left;
                 lr_delay_buffer[lr_write_index][1] = right;
                 
-                // Move index safely
-                lr_write_index++;
-                if (lr_write_index >= LR_LOOKAHEAD_SAMPLES) {
-                   lr_write_index = 0;
-                }
+                lr_write_index = (lr_write_index + 1) % LR_LOOKAHEAD_SAMPLES;
               
-                // Look-ahead Peak Envelope detection using CURRENT raw samples
-                float current_L_plus_R = (left + right) * 0.5f;
+                float current_L_plus_R  = (left + right) * 0.5f;
                 float current_L_minus_R = (left - right) * 0.5f;
                 float abs_lr_diff = fabs(current_L_minus_R);
               
                 if (abs_lr_diff > lr_env) {
-                    lr_env = abs_lr_diff; // Instant capture on upcoming transient edge
+                    lr_env = abs_lr_diff; 
                 } else {
-                    lr_env += 0.005f * (abs_lr_diff - lr_env); // Snappy release
+                    lr_env += 0.003f * (abs_lr_diff - lr_env); 
                 }
                  
-                // Calculate gain reduction based on user limits
                 float limit = settings.lr_limit;
-                float knee_start = limit * 0.80f; 
+                float knee_start = limit * 0.75f; 
                 float gain_reduction = 1.0f;
               
                 if (lr_env > knee_start) {
@@ -346,28 +316,23 @@ void dsp_processing_task(void *pvParameters) {
                     }
                 }
               
-                // Apply the tracked gain reduction to the DELAYED samples
-                left = delayed_L * gain_reduction;
-                right = delayed_R * gain_reduction;
+                float target_L = delayed_L * gain_reduction;
+                float target_R = delayed_R * gain_reduction;
               
-                // Cross-Matrix Carrier Protection for Mono DSP Radios
-                float post_L_plus_R = (left + right) * 0.5f;
-                float post_L_minus_R = (left - right) * 0.5f;
-                float safe_lr_ceiling = fabs(post_L_plus_R) * 0.85f;
+                float post_L_plus_R  = (target_L + target_R) * 0.5f;
+                float post_L_minus_R = (target_L - target_R) * 0.5f;
                 
-                if (safe_lr_ceiling > settings.lr_limit) {
-                    safe_lr_ceiling = settings.lr_limit;
-                }
-                if (safe_lr_ceiling < 0.10f) {
-                    safe_lr_ceiling = 0.10f; 
-                }
+                float safe_lr_ceiling = fabs(post_L_plus_R) * 0.85f;
+                if (safe_lr_ceiling > limit) safe_lr_ceiling = limit;
+                if (safe_lr_ceiling < 0.10f) safe_lr_ceiling = 0.10f; 
                 
                 if (fabs(post_L_minus_R) > safe_lr_ceiling) {
                     float cross_matrix_reduction = safe_lr_ceiling / fabs(post_L_minus_R);
                     post_L_minus_R *= cross_matrix_reduction;
-                    left = post_L_plus_R + post_L_minus_R;
-                    right = post_L_plus_R - post_L_minus_R;
                 }
+
+                left  = post_L_plus_R + post_L_minus_R;
+                right = post_L_plus_R - post_L_minus_R;
 
                 // ========================================================
                 // 3. 🎯 TARGET INJECTION POINT: Pre-Clipper Calibration Tone
@@ -385,7 +350,7 @@ void dsp_processing_task(void *pvParameters) {
                 }
 
                 // ========================================================
-                // 4. Pre-mask Soft Clipper (Now acts strictly as a micro peak guard)
+                // 4. Pre-mask Soft Clipper
                 // ========================================================
                 left = (left > settings.pos_clip_limit) ? settings.pos_clip_limit : ((left < settings.neg_clip_limit) ? settings.neg_clip_limit : left);
                 right = (right > settings.pos_clip_limit) ? settings.pos_clip_limit : ((right < settings.neg_clip_limit) ? settings.neg_clip_limit : right);
@@ -430,44 +395,33 @@ void dsp_processing_task(void *pvParameters) {
             }
 
             size_t bytes_written;
-
-            // Using modern explicit casting for ring buffer blocks
             i2s_channel_write(tx_handle, (const void *)buffer, item_size, &bytes_written, pdMS_TO_TICKS(20));
-            
-            // Release memory back to the ring buffer immediately so A2DP can write more data!
             vRingbufferReturnItem(audio_ring_buffer, (void *)buffer);
+        } 
+        else {
+            vTaskDelay(1); 
         }
-        
-        // Essential yield step to allow Bluetooth background threads to catch up
-        vTaskDelay(1); 
     }
 }
 
-
 void init_modern_i2s() {
-    // 1. Configure the modern I2S Controller slot
     i2s_chan_config_t chan_cfg = I2S_CHANNEL_DEFAULT_CONFIG(I2S_NUM_0, I2S_ROLE_MASTER);
-    chan_cfg.auto_clear = true; // Prevents noise burst artifacts
-    
-    // Allocate the channel
+    chan_cfg.auto_clear = true; 
     i2s_new_channel(&chan_cfg, &tx_handle, NULL);
 
-    // 2. Configure the clock and sample widths
-        i2s_std_config_t std_cfg = {
+    i2s_std_config_t std_cfg = {
         .clk_cfg = I2S_STD_CLK_DEFAULT_CONFIG(SAMPLE_RATE),
         .slot_cfg = I2S_STD_MSB_SLOT_DEFAULT_CONFIG(I2S_DATA_BIT_WIDTH_16BIT, I2S_SLOT_MODE_STEREO),
         .gpio_cfg = {
             .mclk = I2S_GPIO_UNUSED,
-            .bclk = I2S_BCK_IO,      // <-- FIXED: Must be .bclk, not .bck
-            .ws = I2S_WS_IO,         // <-- Keep this as .ws
-            .dout = I2S_DO_IO,       // <-- Keep this as .dout
+            .bclk = I2S_BCK_IO,      
+            .ws = I2S_WS_IO,         
+            .dout = I2S_DO_IO,       
             .din = I2S_GPIO_UNUSED,
             .invert_flags = { .mclk_inv = false, .bclk_inv = false, .ws_inv = false }
         }
     };
-
     
-    // Initialize and enable the physical peripheral
     i2s_channel_init_std_mode(tx_handle, &std_cfg);
     i2s_channel_enable(tx_handle);
 }
@@ -512,37 +466,37 @@ void load_settings() {
     settings.slow_comp.gate_threshold = prefs.getFloat("slow_gate", 0.005f);
 }
 
+
 void save_setting(const char* key, float val) { prefs.putFloat(key, val); }
 void save_setting(const char* key, bool val)   { prefs.putBool(key, val); }
 void save_setting(const char* key, uint8_t val){ prefs.putUChar(key, val); }
 
 void setup() {
     Serial.begin(115200);
-    delay(500); 
+    delay(500);
+
+    memset(lr_delay_buffer, 0, sizeof(lr_delay_buffer));
+    lr_write_index = 0;
+    lr_env = 0.0f;
     
     load_settings();
     crossover.init(360.0f, 3600.0f);
     update_mask_filter(settings.mask_selection);
     
-    // Initialize the new, warning-free modern I2S hardware channel
     init_modern_i2s();
     
-    // Allow-split buffer allocation handles incoming Bluetooth chunks flawlessly
     audio_ring_buffer = xRingbufferCreate(16384, RINGBUF_TYPE_BYTEBUF);
     if (audio_ring_buffer == NULL) {
         Serial.println("CRITICAL: Failed to create ring buffer!");
     }
     
-    // Spin up your background processing pipeline thread on Core 1
-    xTaskCreatePinnedToCore(dsp_processing_task, "DSP_Task", 16384, NULL, 3, &dsp_task_handle, 1);
+    xTaskCreatePinnedToCore(dsp_processing_task, "DSP_Task", 16384, NULL, 5, &dsp_task_handle, 1);
     
-    // Tell A2DP to capture audio but keep its hands completely off the I2S hardware (false)
     a2dp_sink.set_stream_reader(audio_data_callback, false); 
     a2dp_sink.start("ESP32_AM_Asym_Proc");
     
     Serial.println("System modernised and ready.");
 }
-
 
 void loop() {
     if (Serial.available() > 0) {
@@ -585,6 +539,8 @@ void loop() {
         }
         else if (cmd.startsWith("COMP=")) {
             String data = cmd.substring(5);
+            
+            // 🎯 FIXED: Changed 'int c;' to an explicit integer array 'int c[5];'
             int c[5];
             c[0] = data.indexOf(',');
             for (int i=1; i<5; i++) c[i] = data.indexOf(',', c[i-1]+1);
@@ -599,13 +555,12 @@ void loop() {
             float calculated_attack_coef  = 1.0f - exp(-1.0f / (SAMPLE_RATE * (at / 1000.0f)));
             float calculated_release_coef = 1.0f - exp(-1.0f / (SAMPLE_RATE * (rel / 1000.0f)));
             
-                        volatile DynamicsSettings* targetBand = NULL;
+            volatile DynamicsSettings* targetBand = NULL;
             if (band == "LOW")       targetBand = &settings.low_comp;
             else if (band == "MID")  targetBand = &settings.mid_comp;
             else if (band == "HIGH") targetBand = &settings.high_comp;
             else if (band == "SLOW") targetBand = &settings.slow_comp;
             
-            // FIX: Write directly to volatile fields safely without dangerous pointer casting!
             if (targetBand != NULL) {
                 targetBand->threshold      = th;
                 targetBand->ratio          = rt;
