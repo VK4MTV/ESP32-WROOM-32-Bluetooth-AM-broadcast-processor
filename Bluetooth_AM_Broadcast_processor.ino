@@ -205,16 +205,38 @@ void update_mask_filter(FilterSelection selection) {
     maskFilterR1.setLPF(freq, 0.707f); maskFilterR2.setLPF(freq, 0.707f);
 }
 
+// 🎯 STEP 2: The Self-Cleaning Elastic Audio Callback
 void audio_data_callback(const uint8_t *data, uint32_t length) {
     if (audio_ring_buffer != NULL) {
+        // Attempt to send the incoming packet to the DSP queue
         BaseType_t status = xRingbufferSend(audio_ring_buffer, (void*)data, length, 0);
+        
         if (status == pdTRUE) {
             __atomic_fetch_add(&audio_packets_received, 1, __ATOMIC_SEQ_CST);
-        } else {
-            __atomic_fetch_add(&audio_packets_dropped, 1, __ATOMIC_SEQ_CST);
+        } 
+        else {
+            // BUFFER OVERFLOW GATHERING: The buffer is too full to accept this packet.
+            // Instead of crashing or freezing, we forcefully retrieve and discard
+            // the oldest stale block currently waiting in the queue to free up space.
+            size_t discard_size;
+            uint8_t *stale_block = (uint8_t *)xRingbufferReceive(audio_ring_buffer, &discard_size, 0);
+            
+            if (stale_block != NULL) {
+                vRingbufferReturnItem(audio_ring_buffer, (void *)stale_block); // Instantly drop old block
+            }
+            
+            // Forcefully retry sending the fresh packet into the newly cleared space
+            status = xRingbufferSend(audio_ring_buffer, (void*)data, length, 0);
+            
+            if (status == pdTRUE) {
+                __atomic_fetch_add(&audio_packets_received, 1, __ATOMIC_SEQ_CST);
+            } else {
+                __atomic_fetch_add(&audio_packets_dropped, 1, __ATOMIC_SEQ_CST);
+            }
         }
     }
 }
+
 
 void dsp_processing_task(void *pvParameters) {
     size_t item_size;
@@ -291,7 +313,11 @@ void dsp_processing_task(void *pvParameters) {
                 lr_delay_buffer[lr_write_index][0] = left;
                 lr_delay_buffer[lr_write_index][1] = right;
                 
-                lr_write_index = (lr_write_index + 1) % LR_LOOKAHEAD_SAMPLES;
+                // 🎯 RAPID FIXED REPLACEMENT:
+                lr_write_index++;
+                if (lr_write_index >= LR_LOOKAHEAD_SAMPLES) {
+                    lr_write_index = 0;
+                }
               
                 float current_L_plus_R  = (left + right) * 0.5f;
                 float current_L_minus_R = (left - right) * 0.5f;
@@ -399,7 +425,10 @@ void dsp_processing_task(void *pvParameters) {
             vRingbufferReturnItem(audio_ring_buffer, (void *)buffer);
         } 
         else {
-            vTaskDelay(1); 
+            // 🎯 ADJUSTMENT Sleep for 4ms instead of 1ms if the buffer runs empty.
+            // This stops the CPU from spinning hot and gives the chip time to cool down
+            // while the phone catches up on wireless packets.
+            vTaskDelay(pdMS_TO_TICKS(4)); 
         }
     }
 }
@@ -485,12 +514,12 @@ void setup() {
     
     init_modern_i2s();
     
-    audio_ring_buffer = xRingbufferCreate(16384, RINGBUF_TYPE_BYTEBUF);
+    audio_ring_buffer = xRingbufferCreate(24576, RINGBUF_TYPE_BYTEBUF);
     if (audio_ring_buffer == NULL) {
         Serial.println("CRITICAL: Failed to create ring buffer!");
     }
-    
-    xTaskCreatePinnedToCore(dsp_processing_task, "DSP_Task", 16384, NULL, 5, &dsp_task_handle, 1);
+    // Edit number after NULL was 5, now its 3 to fix a minor Jitter, while editing vTaskDelay()
+    xTaskCreatePinnedToCore(dsp_processing_task, "DSP_Task", 16384, NULL, 3, &dsp_task_handle, 1);
     
     a2dp_sink.set_stream_reader(audio_data_callback, false); 
     a2dp_sink.start("ESP32_AM_Asym_Proc");
