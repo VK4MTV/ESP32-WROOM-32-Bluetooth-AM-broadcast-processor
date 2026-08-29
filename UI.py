@@ -14,8 +14,34 @@ PORT = find_port()
 ser = serial.Serial(PORT, 115200, timeout=1) if PORT else None
 
 def cmd(s):
-    if ser and ser.is_open: ser.write((s+"\n").encode())
-    else: print("OFF:", s)
+    if ser and ser.is_open:
+        ser.write((s + "\n").encode())
+        ser.flush()
+    else:
+        print("OFF:", s)
+
+    
+_pending = {}
+
+def later(key, fn, ms=40):
+    i = _pending.pop(key, None)
+    if i is not None:
+        try:
+            root.after_cancel(i)
+        except Exception:
+            pass
+    _pending[key] = root.after(ms, fn)
+
+def send_lr(v=None):
+    later("lr", lambda: cmd(f"LR_LIMIT={float(lr_limit.get()):.0f}"))
+
+"""
+def send_lr(v=None):
+    try:
+        cmd(f"LR_LIMIT={float(lr_limit.get()):.0f}")
+    except Exception as e:
+        print("LR_LIMIT:", e)
+"""
 
 def save_to_esp(): cmd("SAVE")
 
@@ -32,10 +58,11 @@ def send_master(v=None):
     except Exception as e:
         print("Send master error:", e)
 
-def send_gain(v=None):    cmd(f"GAIN={float(gain.get()):.2f}")
-def send_pclip(v=None):   cmd(f"PCLIP={float(pclip.get()):.2f}")
-def send_nclip(v=None):   cmd(f"NCLIP={float(nclip.get()):.2f}")
-def send_outgain(v=None): cmd(f"OUTGAIN={float(outg.get()):.2f}")
+def send_gain(v=None):    later("gain",    lambda: cmd(f"GAIN={float(gain.get()):.2f}"))
+def send_pclip(v=None):   later("pclip",   lambda: cmd(f"PCLIP={float(pclip.get()):.2f}"))
+def send_nclip(v=None):   later("nclip",   lambda: cmd(f"NCLIP={float(nclip.get()):.2f}"))
+def send_outgain(v=None): later("outgain", lambda: cmd(f"OUTGAIN={float(outg.get()):.2f}"))
+
 def send_rot():           cmd(f"ROT_EN={1 if rotv.get() else 0}")
 
 def send_band(name, th, rt, at, re, gt):
@@ -92,11 +119,12 @@ def save_preset():
         f.write(f"OUTGAIN={outg.get():.3f}\n")
         f.write(f"ROT={1 if rotv.get() else 0}\n")
         f.write(f"MASK={mc.get()}\n")
-        
-        # FIXED: Core tracking references extraction functions safely
+        f.write(f"HPF={hpf_combo.get()}\n")
+        f.write(f"LR_LIMIT={lr_limit.get():.0f}\n")
+        f.write(f"WAVE={wave_var.get()}\n")
+        f.write(f"TONE_POST={1 if post_var.get() else 0}\n")
         f.write(f"TILT_EN={1 if tiltv.get() else 0}\n")
-        f.write(f"TILT_FREQ={tilt_slider.get():.1f}\n")
-        
+        f.write(f"TILT_FREQ={tilt_slider.get():.1f}\n")        
         f.write(f"LOW_TH={low_th.get():.3f}\nLOW_RT={low_rt.get():.2f}\nLOW_AT={low_at.get()}\nLOW_RE={low_re.get()}\nLOW_GATE={low_gt.get()}\n")
         f.write(f"MID_TH={mid_th.get():.3f}\nMID_RT={mid_rt.get():.2f}\nMID_AT={mid_at.get()}\nMID_RE={mid_re.get()}\nMID_GATE={mid_gt.get()}\n")
         f.write(f"HIGH_TH={high_th.get():.3f}\nHIGH_RT={high_rt.get():.2f}\nHIGH_AT={high_at.get()}\nHIGH_RE={high_re.get()}\nHIGH_GATE={high_gt.get()}\n")
@@ -120,6 +148,11 @@ def load_preset():
     if "OUTGAIN" in vals: outg.set(float(vals["OUTGAIN"]))
     if "ROT" in vals: rotv.set(int(vals["ROT"]))
     if "MASK" in vals: mc.set(vals["MASK"])
+    if "HPF" in vals: hpf_combo.set(vals["HPF"])
+    if "LR_LIMIT" in vals: lr_limit.set(float(vals["LR_LIMIT"]))
+    if "WAVE" in vals: wave_var.set(int(vals["WAVE"]))
+    if "TONE_POST" in vals: post_var.set(int(vals["TONE_POST"]))
+
     
     if "TILT_EN" in vals: tiltv.set(int(vals["TILT_EN"]))
     if "TILT_FREQ" in vals: tilt_slider.set(float(vals["TILT_FREQ"]))
@@ -147,7 +180,12 @@ def load_preset():
 
     send_master()
     send_rot()
-    send_tilt() 
+    cmd(f"MASK={['5','9','10','12','15'].index(mc.get())}")
+    cmd(f"HPF={hpf_combo.get()}")
+    send_lr()
+    send_wave()
+    send_post()
+    send_tilt()
     send_band("LOW", low_th, low_rt, low_at, low_re, low_gt)
     send_band("MID", mid_th, mid_rt, mid_at, mid_re, mid_gt)
     send_band("HIGH", high_th, high_rt, high_at, high_re, high_gt)
@@ -203,6 +241,8 @@ gain, _ = make_slider(f1, "Gain", 0.5, 3.0, 1.0, send_gain)
 pclip, _ = make_slider(f1, "+Clip", 1.0, 1.4, 1.25, send_pclip)
 nclip, _ = make_slider(f1, "-Clip", 0.5, 0.99, 0.95, send_nclip)
 outg, _ = make_slider(f1, "OutLevel", 0.0, 1.5, 1.0, send_outgain)
+lr_limit, _ = make_slider(f1, "L-R %", 5, 100, 75, send_lr, "{:.0f}")
+
 
 # --- 3-BAND COMPRESSOR LAYOUT ---
 def make_band(parent, name, th_def=0.3, rt_def=4.0):
@@ -324,9 +364,22 @@ f_pre = ttk.LabelFrame(right, text="Presets", padding=4)
 f_pre.pack(fill="x", pady=4)
 ttk.Button(f_pre, text="Save Preset File", command=save_preset).pack(fill="x", pady=1)
 ttk.Button(f_pre, text="Load Preset File", command=load_preset).pack(fill="x", pady=1)
+ttk.Button(f_pre, text="Save to ESP (NVS)", command=save_to_esp).pack(fill="x", pady=1)
+
+def on_close():
+    try:
+        if ser and ser.is_open:
+            ser.close()
+    finally:
+        root.destroy()
+
+root.protocol("WM_DELETE_WINDOW", on_close)
 
 root.after(200, send_master)
 root.after(300, send_rot)
+root.after(400, send_lr)
 root.after(500, lambda: cmd(f"HPF={hpf_combo.get()}"))
 root.mainloop()
+
+
 
