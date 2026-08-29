@@ -15,13 +15,11 @@ Hobby low power use only until extensive tests and debugging has been done
 Issues to rectify in performance optimisation! 
 ********************************
 
-****The solution has been found, doing further testing, the attack/release times can only be so fast before causing CPU overload, However turns out this extreme test tests has driven the optimisation of the code to result in what seems to be a very well performing processor, The Loud 1`preset has been updated to a more conservative setting that works well, If you set the attack and release too fast on the multiband section, the processor has to work harder. So far listening tests has been glitch free. this section will be removed when this fix has been confirmed** 
+Jitter issues have been solved, now runs flawlessly, now the development continues; The phase scrambler has been improved to adhere to AM standards, improved UI functionality, the L-R limiter has been improved to fit CQUAM standards.
 
-Update: still Jitters, frustrating, still finding solutions, The Wroom32 may well be working too hard here, biggest issue is this processor has too many features for this WROOM32 to support cleanly and its 512KB RAM leaves very little room for ring buffers, theres insufficient resources, cant go over 24KB without robbing RAM from the Bluetooth core, still working on it but this looks like this path has reached the end with nowhere to go, it seems I have literally hit a performance wall I cant get around. Fortunately I am not giving up yet. at the moment the code is being ported over to the S3 to spin off a more advanced version of this DSP processor which is now a 5 band processor, The WROOM32 will then have some of its tasks offloaded where it will mostly be the bluetooth Transceiver, Continuing using the Wroom32 is the cheapest option over a dedicated bluetooth module operating over S3 and with the resources it has, it will take care of a simpler microphone DSP for phone calls instead, this project will advance rather than stop, there is no going back since its going so well!
+Next step add Tilt correction adjustments and add debouncing on the UI sliders to avoid hammering the ESP32 flash when doing adjustments.
 
-
-
-Also I do hear some clipping artefacts on piano solo's, which I would like to address, even though mostly its not audible on dense material because the artefact gets masked. this is listening on the legendary vintage Sony WM-F16 walkman with multi AM Stereo compatibility.
+These are the last two refinements to add before the "WARNING" is removed and the processor can finally be deemed refined and polished for field use.
 
 I will keep you updated in this development as always. cheers.
 ********************
