@@ -21,7 +21,7 @@ Next step add Tilt correction adjustments and add debouncing on the UI sliders t
 
 These are the last two refinements to add before the "WARNING" is removed and the processor can finally be deemed refined and polished for field use.
 
-Besides that, there is some clipping artefacts that is mostly masked in music program, its very minor but I cant leave this quirk untouched, the aim is to aim for perfection inline with professional broadcast setups, how this artefact is heard is particularly things like a fuzz on piano solo's, Suspect is the clippers or the limiter stage need some work, this will be addressed.
+Besides that, there is some clipping artefacts that is mostly masked in music program, its very minor but I cant leave this quirk untouched, the aim is to aim for perfection to rival professional broadcast processors if I can, how this artefact is heard is particularly a "fuzz" sound on piano solo's, Suspect is the clippers and/or the limiter stage need some work, this will be addressed.
 
 I will keep you updated in this development as always. cheers.
 ********************
